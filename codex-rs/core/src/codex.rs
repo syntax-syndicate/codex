@@ -2125,6 +2125,10 @@ async fn try_run_turn(
     });
     sess.persist_rollout_items(&[rollout_item]).await;
     let mut stream = turn_context.client.clone().stream(&prompt).await?;
+    if notify_stream_recovered {
+        sess.notify_stream_info(sub_id, "connection restored, continuing...")
+            .await;
+    }
 
     let tool_runtime = ToolCallRuntime::new(
         Arc::clone(&router),
@@ -2135,7 +2139,6 @@ async fn try_run_turn(
     );
     let mut output: FuturesOrdered<BoxFuture<CodexResult<ProcessedResponseItem>>> =
         FuturesOrdered::new();
-    let mut should_notify_stream_recovered = notify_stream_recovered;
 
     loop {
         // Poll the next item from the model stream. We must inspect *both* Ok and Err
@@ -2151,12 +2154,6 @@ async fn try_run_turn(
                 ));
             }
         };
-
-        if should_notify_stream_recovered {
-            sess.notify_stream_info(sub_id, "connection restored, continuing...")
-                .await;
-            should_notify_stream_recovered = false;
-        }
 
         let add_completed = &mut |response_item: ProcessedResponseItem| {
             output.push_back(future::ready(Ok(response_item)).boxed());
