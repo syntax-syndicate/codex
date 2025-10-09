@@ -489,6 +489,8 @@ pub enum EventMsg {
     /// Notification that a model stream experienced an error or disconnect
     /// and the system is handling it (e.g., retrying with backoff).
     StreamError(StreamErrorEvent),
+    /// Notification that streaming has successfully resumed after a transient error.
+    StreamInfo(StreamInfoEvent),
 
     /// Notification that the agent is about to apply a code patch. Mirrors
     /// `ExecCommandBegin` so front‑ends can show progress indicators.
@@ -1200,6 +1202,11 @@ pub struct BackgroundEventEvent {
 
 #[derive(Debug, Clone, Deserialize, Serialize, TS)]
 pub struct StreamErrorEvent {
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, TS)]
+pub struct StreamInfoEvent {
     pub message: String,
 }
 

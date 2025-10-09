@@ -128,6 +128,7 @@ impl EventProcessorWithJsonOutput {
             EventMsg::StreamError(ev) => vec![ThreadEvent::Error(ThreadErrorEvent {
                 message: ev.message.clone(),
             })],
+            EventMsg::StreamInfo(_) => Vec::new(),
             EventMsg::PlanUpdate(ev) => self.handle_plan_update(ev),
             _ => Vec::new(),
         }

@@ -32,6 +32,7 @@ use codex_core::protocol::ReviewLineRange;
 use codex_core::protocol::ReviewOutputEvent;
 use codex_core::protocol::ReviewRequest;
 use codex_core::protocol::StreamErrorEvent;
+use codex_core::protocol::StreamInfoEvent;
 use codex_core::protocol::TaskCompleteEvent;
 use codex_core::protocol::TaskStartedEvent;
 use codex_core::protocol::ViewImageToolCallEvent;
@@ -2060,6 +2061,24 @@ fn stream_error_is_rendered_to_history() {
     assert!(blob.contains('⚠'));
     assert!(blob.contains("stream error:"));
     assert!(blob.contains("idle timeout waiting for SSE"));
+}
+
+#[test]
+fn stream_info_is_rendered_to_history() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
+    let msg = "connection restored, continuing...";
+    chat.handle_codex_event(Event {
+        id: "sub-1".into(),
+        msg: EventMsg::StreamInfo(StreamInfoEvent {
+            message: msg.to_string(),
+        }),
+    });
+
+    let cells = drain_insert_history(&mut rx);
+    assert!(!cells.is_empty(), "expected a history cell for StreamInfo");
+    let blob = lines_to_single_string(cells.last().unwrap());
+    assert!(blob.contains('✅'));
+    assert!(blob.contains("connection restored, continuing..."));
 }
 
 #[test]

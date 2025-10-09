@@ -89,6 +89,7 @@ use crate::protocol::ReviewOutputEvent;
 use crate::protocol::SandboxPolicy;
 use crate::protocol::SessionConfiguredEvent;
 use crate::protocol::StreamErrorEvent;
+use crate::protocol::StreamInfoEvent;
 use crate::protocol::Submission;
 use crate::protocol::TokenCountEvent;
 use crate::protocol::TokenUsage;
@@ -990,6 +991,16 @@ impl Session {
         let event = Event {
             id: sub_id.to_string(),
             msg: EventMsg::StreamError(StreamErrorEvent {
+                message: message.into(),
+            }),
+        };
+        self.send_event(event).await;
+    }
+
+    async fn notify_stream_info(&self, sub_id: &str, message: impl Into<String>) {
+        let event = Event {
+            id: sub_id.to_string(),
+            msg: EventMsg::StreamInfo(StreamInfoEvent {
                 message: message.into(),
             }),
         };
@@ -1971,6 +1982,7 @@ async fn run_turn(
             Arc::clone(&turn_diff_tracker),
             &sub_id,
             &prompt,
+            retries > 0,
         )
         .await
         {
@@ -2046,6 +2058,7 @@ async fn try_run_turn(
     turn_diff_tracker: SharedTurnDiffTracker,
     sub_id: &str,
     prompt: &Prompt,
+    notify_stream_recovered: bool,
 ) -> CodexResult<TurnRunResult> {
     // call_ids that are part of this response.
     let completed_call_ids = prompt
@@ -2122,6 +2135,7 @@ async fn try_run_turn(
     );
     let mut output: FuturesOrdered<BoxFuture<CodexResult<ProcessedResponseItem>>> =
         FuturesOrdered::new();
+    let mut should_notify_stream_recovered = notify_stream_recovered;
 
     loop {
         // Poll the next item from the model stream. We must inspect *both* Ok and Err
@@ -2137,6 +2151,12 @@ async fn try_run_turn(
                 ));
             }
         };
+
+        if should_notify_stream_recovered {
+            sess.notify_stream_info(sub_id, "connection restored, continuing...")
+                .await;
+            should_notify_stream_recovered = false;
+        }
 
         let add_completed = &mut |response_item: ProcessedResponseItem| {
             output.push_back(future::ready(Ok(response_item)).boxed());

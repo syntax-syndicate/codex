@@ -33,6 +33,7 @@ use codex_core::protocol::PatchApplyBeginEvent;
 use codex_core::protocol::RateLimitSnapshot;
 use codex_core::protocol::ReviewRequest;
 use codex_core::protocol::StreamErrorEvent;
+use codex_core::protocol::StreamInfoEvent;
 use codex_core::protocol::TaskCompleteEvent;
 use codex_core::protocol::TokenUsage;
 use codex_core::protocol::TokenUsageInfo;
@@ -623,6 +624,11 @@ impl ChatWidget {
     fn on_stream_error(&mut self, message: String) {
         // Show stream errors in the transcript so users see retry/backoff info.
         self.add_to_history(history_cell::new_stream_error_event(message));
+        self.request_redraw();
+    }
+
+    fn on_stream_info(&mut self, message: String) {
+        self.add_to_history(history_cell::new_stream_info_event(message));
         self.request_redraw();
     }
 
@@ -1434,6 +1440,7 @@ impl ChatWidget {
                 self.on_background_event(message)
             }
             EventMsg::StreamError(StreamErrorEvent { message }) => self.on_stream_error(message),
+            EventMsg::StreamInfo(StreamInfoEvent { message }) => self.on_stream_info(message),
             EventMsg::UserMessage(ev) => {
                 if from_replay {
                     self.on_user_message_event(ev);

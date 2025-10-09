@@ -17,6 +17,7 @@ use codex_core::protocol::PatchApplyBeginEvent;
 use codex_core::protocol::PatchApplyEndEvent;
 use codex_core::protocol::SessionConfiguredEvent;
 use codex_core::protocol::StreamErrorEvent;
+use codex_core::protocol::StreamInfoEvent;
 use codex_core::protocol::TaskCompleteEvent;
 use codex_core::protocol::TurnAbortReason;
 use codex_core::protocol::TurnDiffEvent;
@@ -166,6 +167,14 @@ impl EventProcessor for EventProcessorWithHumanOutput {
             }
             EventMsg::StreamError(StreamErrorEvent { message }) => {
                 ts_msg!(self, "{}", message.style(self.dimmed));
+            }
+            EventMsg::StreamInfo(StreamInfoEvent { message }) => {
+                ts_msg!(
+                    self,
+                    "{} {}",
+                    "✅".style(self.green),
+                    message.style(self.dimmed),
+                );
             }
             EventMsg::TaskStarted(_) => {
                 // Ignore.
