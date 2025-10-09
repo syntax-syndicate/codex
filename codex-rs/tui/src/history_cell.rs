@@ -943,11 +943,6 @@ pub(crate) fn new_error_event(message: String) -> PlainHistoryCell {
     PlainHistoryCell { lines }
 }
 
-pub(crate) fn new_stream_error_event(message: String) -> PlainHistoryCell {
-    let lines: Vec<Line<'static>> = vec![vec![padded_emoji("⚠️").into(), message.dim()].into()];
-    PlainHistoryCell { lines }
-}
-
 pub(crate) fn new_stream_info_event(message: String) -> PlainHistoryCell {
     let lines: Vec<Line<'static>> = vec![vec![padded_emoji("✅").into(), message.dim()].into()];
     PlainHistoryCell { lines }
