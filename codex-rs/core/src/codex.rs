@@ -89,7 +89,6 @@ use crate::protocol::ReviewOutputEvent;
 use crate::protocol::SandboxPolicy;
 use crate::protocol::SessionConfiguredEvent;
 use crate::protocol::StreamErrorEvent;
-use crate::protocol::StreamInfoEvent;
 use crate::protocol::Submission;
 use crate::protocol::TokenCountEvent;
 use crate::protocol::TokenUsage;
@@ -991,16 +990,6 @@ impl Session {
         let event = Event {
             id: sub_id.to_string(),
             msg: EventMsg::StreamError(StreamErrorEvent {
-                message: message.into(),
-            }),
-        };
-        self.send_event(event).await;
-    }
-
-    async fn notify_stream_info(&self, sub_id: &str, message: impl Into<String>) {
-        let event = Event {
-            id: sub_id.to_string(),
-            msg: EventMsg::StreamInfo(StreamInfoEvent {
                 message: message.into(),
             }),
         };
@@ -1982,7 +1971,6 @@ async fn run_turn(
             Arc::clone(&turn_diff_tracker),
             &sub_id,
             &prompt,
-            retries > 0,
         )
         .await
         {
@@ -2020,7 +2008,7 @@ async fn run_turn(
                     // at a seemingly frozen screen.
                     sess.notify_stream_error(
                         &sub_id,
-                        format!("Reconnection... {retries}/{max_retries}"),
+                        format!("Re-connecting... {retries}/{max_retries}"),
                     )
                     .await;
 
@@ -2056,7 +2044,6 @@ async fn try_run_turn(
     turn_diff_tracker: SharedTurnDiffTracker,
     sub_id: &str,
     prompt: &Prompt,
-    notify_stream_recovered: bool,
 ) -> CodexResult<TurnRunResult> {
     // call_ids that are part of this response.
     let completed_call_ids = prompt
@@ -2123,10 +2110,6 @@ async fn try_run_turn(
     });
     sess.persist_rollout_items(&[rollout_item]).await;
     let mut stream = turn_context.client.clone().stream(&prompt).await?;
-    if notify_stream_recovered {
-        sess.notify_stream_info(sub_id, "connection restored, continuing...")
-            .await;
-    }
 
     let tool_runtime = ToolCallRuntime::new(
         Arc::clone(&router),

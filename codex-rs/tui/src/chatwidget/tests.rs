@@ -32,7 +32,6 @@ use codex_core::protocol::ReviewLineRange;
 use codex_core::protocol::ReviewOutputEvent;
 use codex_core::protocol::ReviewRequest;
 use codex_core::protocol::StreamErrorEvent;
-use codex_core::protocol::StreamInfoEvent;
 use codex_core::protocol::TaskCompleteEvent;
 use codex_core::protocol::TaskStartedEvent;
 use codex_core::protocol::ViewImageToolCallEvent;
@@ -2050,7 +2049,7 @@ fn plan_update_renders_history_cell() {
 fn stream_error_updates_status_indicator() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
     chat.bottom_pane.set_task_running(true);
-    let msg = "Reconnection... 2/5";
+    let msg = "Re-connecting... 2/5";
     chat.handle_codex_event(Event {
         id: "sub-1".into(),
         msg: EventMsg::StreamError(StreamErrorEvent {
@@ -2070,36 +2069,6 @@ fn stream_error_updates_status_indicator() {
     assert_eq!(status.header(), msg);
 }
 
-#[test]
-fn stream_info_is_rendered_to_history() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
-    chat.bottom_pane.set_task_running(true);
-    chat.handle_codex_event(Event {
-        id: "sub-1".into(),
-        msg: EventMsg::StreamError(StreamErrorEvent {
-            message: "Reconnection... 2/5".to_string(),
-        }),
-    });
-    drain_insert_history(&mut rx);
-    let msg = "connection restored, continuing...";
-    chat.handle_codex_event(Event {
-        id: "sub-1".into(),
-        msg: EventMsg::StreamInfo(StreamInfoEvent {
-            message: msg.to_string(),
-        }),
-    });
-
-    let cells = drain_insert_history(&mut rx);
-    assert!(!cells.is_empty(), "expected a history cell for StreamInfo");
-    let blob = lines_to_single_string(cells.last().unwrap());
-    assert!(blob.contains('✅'));
-    assert!(blob.contains("connection restored, continuing..."));
-    let status = chat
-        .bottom_pane
-        .status_widget()
-        .expect("status indicator should be visible");
-    assert_eq!(status.header(), "Working");
-}
 
 #[test]
 fn multiple_agent_messages_in_single_turn_emit_multiple_headers() {

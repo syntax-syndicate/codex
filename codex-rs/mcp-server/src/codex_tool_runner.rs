@@ -269,7 +269,6 @@ async fn run_codex_tool_session_inner(
                     | EventMsg::ExecCommandEnd(_)
                     | EventMsg::BackgroundEvent(_)
                     | EventMsg::StreamError(_)
-                    | EventMsg::StreamInfo(_)
                     | EventMsg::PatchApplyBegin(_)
                     | EventMsg::PatchApplyEnd(_)
                     | EventMsg::TurnDiff(_)
