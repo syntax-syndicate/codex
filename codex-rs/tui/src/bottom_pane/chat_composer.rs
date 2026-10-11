@@ -267,6 +267,9 @@
 //!   from UI ticks to integrate a pending burst via [`ChatComposer::apply_paste`] or insert a
 //!   held single character. Explicit terminal paste events use [`ChatComposer::handle_paste`] to
 //!   classify input first; buffered keys have already been classified.
+//! - Startup recovery previews held keys with the live Vim Replace policy without consuming them.
+//!   Buffered pastes remain literal in recovery so large-paste and image classification stays with
+//!   the live paste path.
 //!
 //! # Input Disabled Mode
 //!
