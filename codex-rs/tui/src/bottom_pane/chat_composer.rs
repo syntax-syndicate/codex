@@ -163,6 +163,7 @@
 //! intact until reconnection succeeds, except for the local `/warnings` command.
 //! When connected but the thread is unavailable, configured
 //! submit keys may dispatch explicitly allowed recovery and local commands; other drafts stay put.
+//! Empty-prompt agents navigation remains available with its usual editor and draft guards.
 //! Collapsed pastes expand into editable text so the full draft can be copied before quitting.
 //!
 //! # Reasoning Effort Animations
@@ -3785,9 +3786,7 @@ impl ChatComposer {
             return false;
         }
 
-        if key_hint::plain(KeyCode::Left).is_press(*key_event) && self.agents_navigation_available()
-        {
-            self.app_event_tx.send(AppEvent::OpenAgentsOverview);
+        if self.handle_agents_navigation(*key_event) {
             return true;
         }
 
