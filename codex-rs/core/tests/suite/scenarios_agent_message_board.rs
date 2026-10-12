@@ -89,16 +89,28 @@ fn configure(config: &mut codex_core::config::Config) {
 #[test_case::test_case(true, false, false; "legacy_agents")]
 #[test_case::test_case(true, true, true; "ephemeral")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn board_requires_persistent_v2_runtime(
+async fn unavailable_board_calls_return_model_errors(
     board_enabled: bool,
     multi_agent_v2: bool,
     ephemeral: bool,
 ) -> anyhow::Result<()> {
     let server = responses::start_mock_server().await;
-    let mock = responses::mount_sse_once(&server, done()).await;
+    let mock = responses::mount_sse_sequence(
+        &server,
+        vec![
+            tool(
+                "missing-board",
+                "post",
+                json!({"new_channel_name":"design", "text":"A decision."}),
+            ),
+            done(),
+        ],
+    )
+    .await;
     let test = test_codex()
         .with_config(move |config| {
             configure(config);
+            config.multi_agent_v2.disable_direct_message = true;
             if !board_enabled {
                 config
                     .features
@@ -115,15 +127,22 @@ async fn board_requires_persistent_v2_runtime(
         })
         .build_with_auto_env(&server)
         .await?;
-    test.submit_turn("Hello.").await?;
-    assert!(
-        responses::namespace_child_tool(
-            &mock.single_request().body_json(),
-            "collaboration",
-            "post"
-        )
-        .is_none()
+    test.submit_turn("Try posting the decision on the board.")
+        .await?;
+    let requests = mock.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(
+        requests[1]
+            .function_call_output_text("missing-board")
+            .as_deref(),
+        Some("unsupported call: collaborationpost")
     );
+    for name in ["post", "send_message", "followup_task"] {
+        assert!(
+            responses::namespace_child_tool(&requests[0].body_json(), "collaboration", name)
+                .is_none()
+        );
+    }
     assert!(
         !test
             .config
