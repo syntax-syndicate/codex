@@ -63,6 +63,7 @@ use tokio_tungstenite::accept_async;
 use tokio_tungstenite::tungstenite::Message;
 
 const CALL_ID: &str = "pushed-remote-process-events";
+const POLL_CALL_ID: &str = "poll-remote-process-events";
 const COMPLETE_OUTPUT: &str = "pushed remote output\n";
 const RECOVERED_OUTPUT: &str = "recovered missing output\n";
 const RETAINED_OUTPUT: &str = "retained output\n";
@@ -76,6 +77,7 @@ enum PushedExecScenario {
     OutputAfterExit,
     OutputAfterRecoveredExit,
     OutputOpenAtDeadline,
+    OutputOpenAtFinalPoll,
     OutputOpenWhenCancelled,
     OutputOpenWhenTerminated,
     CodexPath,
@@ -430,6 +432,7 @@ async fn serve_exec_with_pushed_events(
     let output_stays_open = matches!(
         scenario,
         PushedExecScenario::OutputOpenAtDeadline
+            | PushedExecScenario::OutputOpenAtFinalPoll
             | PushedExecScenario::OutputOpenWhenCancelled
             | PushedExecScenario::OutputOpenWhenTerminated
     );
@@ -441,6 +444,7 @@ async fn serve_exec_with_pushed_events(
         PushedExecScenario::OutputAfterExit
         | PushedExecScenario::OutputAfterRecoveredExit
         | PushedExecScenario::OutputOpenAtDeadline
+        | PushedExecScenario::OutputOpenAtFinalPoll
         | PushedExecScenario::OutputOpenWhenCancelled
         | PushedExecScenario::OutputOpenWhenTerminated => {
             send_exec_server_json(
@@ -614,6 +618,7 @@ async fn serve_exec_with_pushed_events(
                     PushedExecScenario::OutputAfterExit
                     | PushedExecScenario::OutputAfterRecoveredExit
                     | PushedExecScenario::OutputOpenAtDeadline
+                    | PushedExecScenario::OutputOpenAtFinalPoll
                     | PushedExecScenario::OutputOpenWhenCancelled
                     | PushedExecScenario::OutputOpenWhenTerminated => {
                         panic!("unexpected read after the delayed-output sequence")
@@ -741,6 +746,7 @@ async fn serve_exec_with_pushed_events(
 #[test_case(PushedExecScenario::OutputAfterExit, ManagedNetworkScenario::None, false ; "output_after_exit")]
 #[test_case(PushedExecScenario::OutputAfterRecoveredExit, ManagedNetworkScenario::None, false ; "output_after_recovered_exit")]
 #[test_case(PushedExecScenario::OutputOpenAtDeadline, ManagedNetworkScenario::None, /*foreign_cwd*/ false ; "output_open_at_deadline")]
+#[test_case(PushedExecScenario::OutputOpenAtFinalPoll, ManagedNetworkScenario::None, /*foreign_cwd*/ false ; "output_open_at_final_poll")]
 #[test_case(PushedExecScenario::OutputOpenWhenCancelled, ManagedNetworkScenario::None, /*foreign_cwd*/ false ; "output_open_when_cancelled")]
 #[test_case(PushedExecScenario::OutputOpenWhenTerminated, ManagedNetworkScenario::None, /*foreign_cwd*/ false ; "output_open_when_terminated")]
 #[test_case(PushedExecScenario::CodexPath, ManagedNetworkScenario::None, false ; "codex_path_is_exported_before_nested_command")]
@@ -777,6 +783,7 @@ async fn exec_command_consumes_pushed_remote_process_events(
     foreign_cwd: bool,
 ) -> Result<()> {
     let finish_at_deadline = matches!(scenario, PushedExecScenario::OutputOpenAtDeadline);
+    let finish_at_final_poll = matches!(scenario, PushedExecScenario::OutputOpenAtFinalPoll);
     let cancel_after_exit = matches!(scenario, PushedExecScenario::OutputOpenWhenCancelled);
     let terminate_after_exit = matches!(scenario, PushedExecScenario::OutputOpenWhenTerminated);
     let explicit_path = "/user/configured/bin:/user/other/bin";
@@ -868,6 +875,20 @@ async fn exec_command_consumes_pushed_remote_process_events(
     ];
     if cancel_after_exit {
         responses.truncate(/*len*/ 1);
+    }
+    if finish_at_final_poll {
+        responses.insert(
+            /*index*/ 1,
+            sse(vec![
+                ev_response_created("resp-poll"),
+                ev_function_call(
+                    POLL_CALL_ID,
+                    "write_stdin",
+                    &json!({ "session_id": 1000, "chars": "", "yield_time_ms": 1_000 }).to_string(),
+                ),
+                ev_completed("resp-poll"),
+            ]),
+        );
     }
     let response_mock = mount_sse_sequence(&server, responses).await;
     let exec_server_url = format!("ws://{}", listener.local_addr()?);
@@ -1124,8 +1145,9 @@ timeout = 900
     let mut command_end = None;
     let mut stopped = false;
     let mut turn_finished = false;
-    let wait_for_end = finish_at_deadline || cancel_after_exit || terminate_after_exit;
-    let event_timeout = if finish_at_deadline || terminate_after_exit {
+    let wait_for_end =
+        finish_at_deadline || finish_at_final_poll || cancel_after_exit || terminate_after_exit;
+    let event_timeout = if finish_at_deadline || finish_at_final_poll || terminate_after_exit {
         STARTUP_TIMEOUT
     } else {
         Duration::from_secs(/*secs*/ 5)
@@ -1205,10 +1227,10 @@ timeout = 900
                     stopped = true;
                 }
                 EventMsg::RawResponseItem(raw)
-                    if terminate_after_exit
+                    if (finish_at_final_poll || terminate_after_exit)
                         && matches!(&raw.item, ResponseItem::FunctionCallOutput { call_id, .. } if call_id.as_deref() == Some(CALL_ID)) =>
                 {
-                    // Explicit termination must run after the initial exec_command yielded.
+                    // Polling and explicit termination must observe exit after the initial call yielded.
                     output_ready.notify_one();
                 }
                 EventMsg::ExecCommandEnd(event) if event.call_id == CALL_ID => {
@@ -1553,8 +1575,27 @@ timeout = 900
     let request = response_mock
         .last_request()
         .context("model should receive the exec_command output")?;
+    let output_call_id = if finish_at_final_poll {
+        let (initial_output, _) = request
+            .function_call_output_content_and_success(CALL_ID)
+            .context("initial exec_command should yield a session")?;
+        assert!(
+            initial_output
+                .context("initial exec_command output should contain text")?
+                .contains("Process running with session ID 1000")
+        );
+        assert!(
+            !test
+                .codex
+                .terminate_background_terminal(/*process_id*/ 1000)
+                .await
+        );
+        POLL_CALL_ID
+    } else {
+        CALL_ID
+    };
     let (output, success) = request
-        .function_call_output_content_and_success(CALL_ID)
+        .function_call_output_content_and_success(output_call_id)
         .context("exec_command output should be model visible")?;
     let output = output.context("exec_command output should contain text")?;
     let process_read_requests = exec_server_result.process_read_requests;
@@ -1562,6 +1603,7 @@ timeout = 900
         PushedExecScenario::OutputAfterExit
         | PushedExecScenario::OutputAfterRecoveredExit
         | PushedExecScenario::OutputOpenAtDeadline
+        | PushedExecScenario::OutputOpenAtFinalPoll
         | PushedExecScenario::OutputOpenWhenCancelled
         | PushedExecScenario::OutputOpenWhenTerminated => {
             assert_ne!(success, Some(false));
