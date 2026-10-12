@@ -11,6 +11,7 @@ use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Settings;
 use codex_protocol::models::PermissionProfile;
+use codex_protocol::models::ResponseItem;
 use codex_protocol::permissions::FileSystemAccessMode;
 use codex_protocol::permissions::FileSystemPath;
 use codex_protocol::permissions::FileSystemSandboxEntry;
@@ -74,6 +75,9 @@ enum PushedExecScenario {
     Complete,
     OutputAfterExit,
     OutputAfterRecoveredExit,
+    OutputOpenAtDeadline,
+    OutputOpenWhenCancelled,
+    OutputOpenWhenTerminated,
     CodexPath,
     CodexPathDefaultFeature,
     CodexPathDisabledFeature,
@@ -233,6 +237,7 @@ async fn serve_exec_with_pushed_events(
     listener: TcpListener,
     scenario: PushedExecScenario,
     process_started: Arc<AtomicBool>,
+    output_ready: Arc<tokio::sync::Notify>,
 ) -> PushedExecServerResult {
     let unrestricted_patch = matches!(
         scenario,
@@ -422,9 +427,22 @@ async fn serve_exec_with_pushed_events(
     )
     .await;
 
+    let output_stays_open = matches!(
+        scenario,
+        PushedExecScenario::OutputOpenAtDeadline
+            | PushedExecScenario::OutputOpenWhenCancelled
+            | PushedExecScenario::OutputOpenWhenTerminated
+    );
+    if output_stays_open {
+        output_ready.notified().await;
+    }
     let mut process_read_requests = 0;
     match scenario {
-        PushedExecScenario::OutputAfterExit | PushedExecScenario::OutputAfterRecoveredExit => {
+        PushedExecScenario::OutputAfterExit
+        | PushedExecScenario::OutputAfterRecoveredExit
+        | PushedExecScenario::OutputOpenAtDeadline
+        | PushedExecScenario::OutputOpenWhenCancelled
+        | PushedExecScenario::OutputOpenWhenTerminated => {
             send_exec_server_json(
                 &mut websocket,
                 json!({
@@ -446,7 +464,7 @@ async fn serve_exec_with_pushed_events(
                     "exitCode": 0,
                 }
             });
-            if matches!(scenario, PushedExecScenario::OutputAfterExit) {
+            if !matches!(scenario, PushedExecScenario::OutputAfterRecoveredExit) {
                 exit["params"]["sandboxDenied"] = json!(false);
             }
             send_exec_server_json(&mut websocket, exit).await;
@@ -486,14 +504,16 @@ async fn serve_exec_with_pushed_events(
                 }),
             )
             .await;
-            send_exec_server_json(
-                &mut websocket,
-                json!({
-                    "method": "process/closed",
-                    "params": { "processId": &process_id, "seq": 4 }
-                }),
-            )
-            .await;
+            if !output_stays_open {
+                send_exec_server_json(
+                    &mut websocket,
+                    json!({
+                        "method": "process/closed",
+                        "params": { "processId": &process_id, "seq": 4 }
+                    }),
+                )
+                .await;
+            }
         }
         PushedExecScenario::Complete
         | PushedExecScenario::DenyWin
@@ -581,13 +601,21 @@ async fn serve_exec_with_pushed_events(
     }
 
     loop {
-        let request = read_exec_server_json(&mut websocket, Duration::from_secs(/*secs*/ 5)).await;
+        let wait = if output_stays_open {
+            STARTUP_TIMEOUT
+        } else {
+            Duration::from_secs(/*secs*/ 5)
+        };
+        let request = read_exec_server_json(&mut websocket, wait).await;
         match request["method"].as_str() {
             Some("process/read") => {
                 process_read_requests += 1;
                 let result = match scenario {
                     PushedExecScenario::OutputAfterExit
-                    | PushedExecScenario::OutputAfterRecoveredExit => {
+                    | PushedExecScenario::OutputAfterRecoveredExit
+                    | PushedExecScenario::OutputOpenAtDeadline
+                    | PushedExecScenario::OutputOpenWhenCancelled
+                    | PushedExecScenario::OutputOpenWhenTerminated => {
                         panic!("unexpected read after the delayed-output sequence")
                     }
                     PushedExecScenario::Complete
@@ -712,6 +740,9 @@ async fn serve_exec_with_pushed_events(
 #[test_case(PushedExecScenario::Complete, ManagedNetworkScenario::None, false ; "complete_event_stream")]
 #[test_case(PushedExecScenario::OutputAfterExit, ManagedNetworkScenario::None, false ; "output_after_exit")]
 #[test_case(PushedExecScenario::OutputAfterRecoveredExit, ManagedNetworkScenario::None, false ; "output_after_recovered_exit")]
+#[test_case(PushedExecScenario::OutputOpenAtDeadline, ManagedNetworkScenario::None, /*foreign_cwd*/ false ; "output_open_at_deadline")]
+#[test_case(PushedExecScenario::OutputOpenWhenCancelled, ManagedNetworkScenario::None, /*foreign_cwd*/ false ; "output_open_when_cancelled")]
+#[test_case(PushedExecScenario::OutputOpenWhenTerminated, ManagedNetworkScenario::None, /*foreign_cwd*/ false ; "output_open_when_terminated")]
 #[test_case(PushedExecScenario::CodexPath, ManagedNetworkScenario::None, false ; "codex_path_is_exported_before_nested_command")]
 #[test_case(PushedExecScenario::CodexPathDefaultFeature, ManagedNetworkScenario::None, false ; "codex_path_is_not_exported_by_default")]
 #[test_case(PushedExecScenario::CodexPathDisabledFeature, ManagedNetworkScenario::None, false ; "disabled_codex_path_preserves_original_login_command")]
@@ -745,6 +776,9 @@ async fn exec_command_consumes_pushed_remote_process_events(
     managed_network: ManagedNetworkScenario,
     foreign_cwd: bool,
 ) -> Result<()> {
+    let finish_at_deadline = matches!(scenario, PushedExecScenario::OutputOpenAtDeadline);
+    let cancel_after_exit = matches!(scenario, PushedExecScenario::OutputOpenWhenCancelled);
+    let terminate_after_exit = matches!(scenario, PushedExecScenario::OutputOpenWhenTerminated);
     let explicit_path = "/user/configured/bin:/user/other/bin";
     let managed_network_configured = !matches!(managed_network, ManagedNetworkScenario::None);
     let managed_network_enabled = matches!(managed_network, ManagedNetworkScenario::Enabled { .. });
@@ -765,6 +799,9 @@ async fn exec_command_consumes_pushed_remote_process_events(
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let server = start_mock_server().await;
     let tool_call = match scenario {
+        PushedExecScenario::OutputOpenWhenCancelled => ev_function_call(
+            CALL_ID, "exec_command", &json!({ "cmd": "pwd", "timeout_ms": 30_000 }).to_string(),
+        ),
         _ if deny_read => ev_function_call(
             CALL_ID,
             "exec_command",
@@ -817,28 +854,30 @@ async fn exec_command_consumes_pushed_remote_process_events(
             .to_string(),
         ),
     };
-    let response_mock = mount_sse_sequence(
-        &server,
-        vec![
-            sse(vec![
-                ev_response_created("resp-1"),
-                tool_call,
-                ev_completed("resp-1"),
-            ]),
-            sse(vec![
-                ev_response_created("resp-2"),
-                ev_assistant_message("msg-2", "done"),
-                ev_completed("resp-2"),
-            ]),
-        ],
-    )
-    .await;
+    let mut responses = vec![
+        sse(vec![
+            ev_response_created("resp-1"),
+            tool_call,
+            ev_completed("resp-1"),
+        ]),
+        sse(vec![
+            ev_response_created("resp-2"),
+            ev_assistant_message("msg-2", "done"),
+            ev_completed("resp-2"),
+        ]),
+    ];
+    if cancel_after_exit {
+        responses.truncate(/*len*/ 1);
+    }
+    let response_mock = mount_sse_sequence(&server, responses).await;
     let exec_server_url = format!("ws://{}", listener.local_addr()?);
     let process_started = Arc::new(AtomicBool::new(false));
+    let output_ready = Arc::new(tokio::sync::Notify::new());
     let exec_server = tokio::spawn(serve_exec_with_pushed_events(
         listener,
         scenario,
         Arc::clone(&process_started),
+        Arc::clone(&output_ready),
     ));
     let mut builder = test_codex().with_exec_server_url(exec_server_url);
     if managed_network_configured {
@@ -899,6 +938,13 @@ timeout = 900
                 )
                 .expect("write managed-network test config");
             });
+    }
+    if cancel_after_exit {
+        builder = builder.with_cloud_config_bundle(
+            CloudConfigBundleFixture::loader_with_enterprise_requirement(
+                "[features]\nunified_exec = false\nshell_tool = true\n",
+            ),
+        );
     }
     let mut builder = builder.with_config(move |config| {
         config.project_doc_max_bytes = 0;
@@ -1075,9 +1121,18 @@ timeout = 900
     let mut saw_exec_command_begin = false;
     let mut exec_command_begin_command = None;
     let mut saw_patch_denial_approval = false;
+    let mut command_end = None;
+    let mut stopped = false;
+    let mut turn_finished = false;
+    let wait_for_end = finish_at_deadline || cancel_after_exit || terminate_after_exit;
+    let event_timeout = if finish_at_deadline || terminate_after_exit {
+        STARTUP_TIMEOUT
+    } else {
+        Duration::from_secs(/*secs*/ 5)
+    };
     if !managed_network_enabled {
         loop {
-            let event = timeout(Duration::from_secs(5), test.codex.next_event())
+            let event = timeout(event_timeout, test.codex.next_event())
                 .await
                 .context("turn should complete")??
                 .msg;
@@ -1085,6 +1140,17 @@ timeout = 900
                 EventMsg::ExecCommandBegin(event) if event.call_id == CALL_ID => {
                     saw_exec_command_begin = true;
                     exec_command_begin_command = Some(event.command);
+                    if finish_at_deadline || cancel_after_exit {
+                        // Storage follows the streaming subscription. Wait for it before
+                        // exiting so both deadline cleanup and cancellation see a live session.
+                        timeout(STARTUP_TIMEOUT, async {
+                            while test.codex.list_background_terminals().await.is_empty() {
+                                tokio::task::yield_now().await;
+                            }
+                        })
+                        .await?;
+                        output_ready.notify_one();
+                    }
                 }
                 EventMsg::ExecApprovalRequest(approval) if deny_read => {
                     assert_eq!(approval.call_id, CALL_ID);
@@ -1120,10 +1186,51 @@ timeout = 900
                         })
                         .await?;
                 }
-                EventMsg::TurnComplete(_) => break,
+                EventMsg::ExecCommandOutputDelta(event)
+                    if (cancel_after_exit || terminate_after_exit)
+                        && event.call_id == CALL_ID
+                        && !stopped
+                        && String::from_utf8_lossy(&event.chunk).contains("remote output") =>
+                {
+                    // The exit precedes this output in the executor event stream.
+                    if cancel_after_exit {
+                        test.codex.submit(Op::Interrupt).await?;
+                    } else {
+                        assert!(
+                            test.codex
+                                .terminate_background_terminal(/*process_id*/ 1000)
+                                .await
+                        );
+                    }
+                    stopped = true;
+                }
+                EventMsg::RawResponseItem(raw)
+                    if terminate_after_exit
+                        && matches!(&raw.item, ResponseItem::FunctionCallOutput { call_id, .. } if call_id.as_deref() == Some(CALL_ID)) =>
+                {
+                    // Explicit termination must run after the initial exec_command yielded.
+                    output_ready.notify_one();
+                }
+                EventMsg::ExecCommandEnd(event) if event.call_id == CALL_ID => {
+                    command_end = Some(event);
+                }
+                EventMsg::TurnAborted(_) if cancel_after_exit => {
+                    turn_finished = true;
+                }
+                EventMsg::TurnComplete(_) if !cancel_after_exit => turn_finished = true,
                 _ => {}
             }
+            if turn_finished && (!wait_for_end || command_end.is_some()) {
+                break;
+            }
         }
+    }
+    if wait_for_end {
+        assert_eq!(
+            command_end.map(|end| (end.exit_code, end.aggregated_output)),
+            Some((0, COMPLETE_OUTPUT.to_string()))
+        );
+        assert!(test.codex.list_background_terminals().await.is_empty());
     }
     if matches!(
         scenario,
@@ -1292,6 +1399,11 @@ timeout = 900
             "toolCallId": CALL_ID,
         }),
     );
+    if cancel_after_exit || terminate_after_exit {
+        assert!(stopped);
+        assert_eq!(exec_server_result.process_read_requests, 0);
+        return Ok(());
+    }
     if foreign_cwd && !managed_network_configured && !deny_read {
         let permissions = response_mock.requests()[0]
             .message_input_texts("developer")
@@ -1447,7 +1559,11 @@ timeout = 900
     let output = output.context("exec_command output should contain text")?;
     let process_read_requests = exec_server_result.process_read_requests;
     match scenario {
-        PushedExecScenario::OutputAfterExit | PushedExecScenario::OutputAfterRecoveredExit => {
+        PushedExecScenario::OutputAfterExit
+        | PushedExecScenario::OutputAfterRecoveredExit
+        | PushedExecScenario::OutputOpenAtDeadline
+        | PushedExecScenario::OutputOpenWhenCancelled
+        | PushedExecScenario::OutputOpenWhenTerminated => {
             assert_ne!(success, Some(false));
             assert!(saw_exec_command_begin);
             assert!(output.contains("Process exited with code 0"));
