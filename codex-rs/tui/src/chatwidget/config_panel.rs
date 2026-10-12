@@ -6,6 +6,8 @@ use crate::config_panel::ConfigEditorHandoff;
 use crate::config_panel::ConfigPanel;
 use crate::config_panel::ConfigPanelStatus;
 use crate::config_panel::ConfigPanelUpdate;
+use crate::config_panel::ConfigPreference;
+use crate::config_panel::ConfigToggle;
 use crossterm::event::KeyEvent;
 
 impl ChatWidget {
@@ -25,6 +27,11 @@ impl ChatWidget {
     ) {
         match handoff.editor {
             ConfigEditor::Theme => self.open_theme_picker(),
+            ConfigEditor::Effects => {
+                let keymap = self.bottom_pane.list_keymap();
+                let params = crate::config_panel::effects(&self.local_settings.tui, &keymap);
+                self.bottom_pane.show_selection_view(params);
+            }
             ConfigEditor::StatusLine => self.open_status_line_setup(),
             ConfigEditor::TerminalTitle => self.open_terminal_title_setup(),
             ConfigEditor::Keyboard => self.open_keymap_picker(),
@@ -72,18 +79,66 @@ impl ChatWidget {
         self.bottom_pane.interrupt_config_editor_transition();
     }
 
+    pub(crate) fn apply_config_preference(
+        &mut self,
+        preference: ConfigPreference,
+        tui: &codex_config::types::Tui,
+    ) {
+        preference.adopt(&mut self.local_settings.tui, tui);
+        let tui = &self.local_settings.tui;
+        let ConfigPreference::Toggle { setting, .. } = preference else {
+            return;
+        };
+        match setting {
+            ConfigToggle::Animations | ConfigToggle::ComposerStars => {
+                self.bottom_pane.set_motion_preferences(tui);
+                let model = self.current_model().to_string();
+                self.bottom_pane.stop_ineligible_sparkle(&model, tui);
+                self.bottom_pane.select_sparkle_model(&model, tui);
+            }
+            ConfigToggle::PasteDetection => self.bottom_pane.set_disable_paste_burst(
+                /*disabled*/ tui.disable_paste_burst.unwrap_or(/*default*/ false),
+            ),
+            ConfigToggle::AutomaticRecaps
+            | ConfigToggle::CopyOnSelectClearSelection
+            | ConfigToggle::Notifications
+            | ConfigToggle::StartInVimMode
+            | ConfigToggle::StatusLineColors
+            | ConfigToggle::Tips => {}
+        }
+        if setting == ConfigToggle::Animations
+            && let Some(pet) = self.ambient_pet.as_mut()
+        {
+            pet.set_animations_enabled(tui.animations);
+        }
+    }
+
     pub(crate) fn observe_config_editor_transition_key_event(&mut self, key: KeyEvent) {
         self.bottom_pane
             .observe_config_editor_transition_key_event(key);
     }
 
     pub(crate) fn refresh_config_panel(&mut self, notice: Option<String>) -> bool {
-        self.bottom_pane.update_config_panel(&ConfigPanelUpdate {
+        let panel_updated = self.bottom_pane.update_config_panel(&ConfigPanelUpdate {
             tui: self.config_panel_tui.clone(),
             keymap: self.bottom_pane.list_keymap(),
             status: self.config_panel_status(),
-            notice,
-        })
+            notice: notice.clone(),
+        });
+        let Some(selected_idx) = self
+            .bottom_pane
+            .selected_index_for_active_view(crate::config_panel::EFFECTS_VIEW_ID)
+        else {
+            return panel_updated;
+        };
+        let keymap = self.bottom_pane.list_keymap();
+        let mut params = crate::config_panel::effects(&self.config_panel_tui, &keymap);
+        params.initial_selected_idx = Some(selected_idx);
+        params.subtitle = notice.or(params.subtitle);
+        let effects_updated = self
+            .bottom_pane
+            .replace_selection_view_if_active(crate::config_panel::EFFECTS_VIEW_ID, params);
+        panel_updated || effects_updated
     }
 
     fn config_panel_status(&self) -> ConfigPanelStatus {

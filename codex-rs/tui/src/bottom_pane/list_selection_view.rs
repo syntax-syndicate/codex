@@ -33,6 +33,7 @@ use crate::render::Insets;
 use crate::render::RectExt as _;
 use crate::render::renderable::ColumnRenderable;
 use crate::render::renderable::Renderable;
+use crate::wrapping::word_wrap_lines;
 
 use super::CancellationEvent;
 use super::bottom_pane_view::BottomPaneView;
@@ -48,6 +49,7 @@ use super::selection_popup_common::GenericDisplayRow;
 use super::selection_popup_common::measure_rows_height_with_col_width_mode;
 use super::selection_popup_common::render_rows_single_line_with_col_width_mode;
 use super::selection_popup_common::render_rows_with_col_width_mode;
+use super::selection_popup_common::should_show_selected_description_below;
 pub(crate) use super::selection_row_layout::SelectionDescriptionLayout;
 use super::selection_tabs::SelectionTab;
 use super::selection_tabs::render_tab_bar;
@@ -165,12 +167,18 @@ pub(crate) struct SelectionItem {
     pub toggle: Option<SelectionToggle>,
     pub toggle_placeholder: Option<&'static str>,
     pub display_shortcut: Option<ShortcutHint>,
+    /// Required row metadata retained when the secondary description hides.
+    pub category_tag: Option<String>,
     pub description: Option<String>,
     pub selected_description: Option<String>,
     pub is_current: bool,
     pub is_disabled: bool,
     pub actions: Vec<SelectionAction>,
     pub secondary_action: Option<SelectionSecondaryAction>,
+    /// Footer hint shown while this row is selected.
+    pub footer_hint: Option<Line<'static>>,
+    /// Footer hint shown instead while on-demand search is active.
+    pub search_footer_hint: Option<Line<'static>>,
     pub dismiss_on_select: bool,
     /// Require an explicit accept key after a direct shortcut highlights this sensitive item.
     pub require_explicit_confirmation: bool,
@@ -208,6 +216,8 @@ pub(crate) struct SelectionViewParams {
     pub footer_hint: Option<Line<'static>>,
     pub tab_footer_hints: Vec<(String, Line<'static>)>,
     pub items: Vec<SelectionItem>,
+    /// Optional flat item list used while a tabbed picker has a non-empty search query.
+    pub search_items: Vec<SelectionItem>,
     pub tabs: Vec<SelectionTab>,
     pub initial_tab_id: Option<String>,
     pub is_searchable: bool,
@@ -274,6 +284,7 @@ impl Default for SelectionViewParams {
             footer_hint: None,
             tab_footer_hints: Vec::new(),
             items: Vec::new(),
+            search_items: Vec::new(),
             tabs: Vec::new(),
             initial_tab_id: None,
             is_searchable: false,
@@ -325,6 +336,7 @@ pub(crate) struct ListSelectionView {
     footer_hint: Option<Line<'static>>,
     tab_footer_hints: Vec<(String, Line<'static>)>,
     items: Vec<SelectionItem>,
+    search_items: Vec<SelectionItem>,
     tabs: Vec<SelectionTab>,
     active_tab_idx: Option<usize>,
     state: ScrollState,
@@ -473,6 +485,7 @@ impl ListSelectionView {
             footer_hint: params.footer_hint,
             tab_footer_hints: params.tab_footer_hints,
             items: params.items,
+            search_items: params.search_items,
             tabs: params.tabs,
             active_tab_idx,
             state: ScrollState::new(),
@@ -526,7 +539,23 @@ impl ListSelectionView {
         self.active_tab_idx.is_some()
     }
 
+    fn search_items_active(&self) -> bool {
+        !self.search_query.is_empty() && !self.search_items.is_empty()
+    }
+
+    fn edit_search_query(&mut self, edit: impl FnOnce(&mut String)) {
+        let search_items_were_active = self.search_items_active();
+        edit(&mut self.search_query);
+        if search_items_were_active != self.search_items_active() {
+            self.state.reset();
+        }
+        self.apply_filter();
+    }
+
     fn active_items(&self) -> &[SelectionItem] {
+        if self.search_items_active() {
+            return self.search_items.as_slice();
+        }
         self.active_tab_idx
             .and_then(|idx| self.tabs.get(idx))
             .map(|tab| tab.items.as_slice())
@@ -534,6 +563,9 @@ impl ListSelectionView {
     }
 
     fn active_items_mut(&mut self) -> &mut [SelectionItem] {
+        if self.search_items_active() {
+            return self.search_items.as_mut_slice();
+        }
         if let Some(idx) = self.active_tab_idx
             && let Some(tab) = self.tabs.get_mut(idx)
         {
@@ -565,12 +597,21 @@ impl ListSelectionView {
     }
 
     fn active_footer_hint(&self) -> Option<&Line<'static>> {
-        if let Some(action) = self
+        if let Some(item) = self
             .selected_actual_idx()
             .and_then(|idx| self.active_items().get(idx))
-            .and_then(|item| item.secondary_action.as_ref())
         {
-            return Some(&action.footer_hint);
+            if self.on_demand_search_active()
+                && let Some(hint) = item.search_footer_hint.as_ref()
+            {
+                return Some(hint);
+            }
+            if let Some(hint) = item.footer_hint.as_ref() {
+                return Some(hint);
+            }
+            if let Some(action) = item.secondary_action.as_ref() {
+                return Some(&action.footer_hint);
+            }
         }
         self.active_tab_id()
             .and_then(|active_tab_id| {
@@ -735,7 +776,7 @@ impl ListSelectionView {
                     let wrap_indent = (description.is_none() && item.disabled_reason.is_none())
                         .then_some(wrap_prefix_width);
                     GenericDisplayRow {
-                        category_tag: None,
+                        category_tag: item.category_tag.clone(),
                         selection_style: row_selection_style,
                         name: name_with_marker,
                         name_prefix_spans,
@@ -766,7 +807,9 @@ impl ListSelectionView {
             (active_idx + 1) % len
         };
         self.active_tab_idx = Some(next_idx);
-        self.search_query.clear();
+        if self.search_items.is_empty() {
+            self.search_query.clear();
+        }
         self.rendered_item_count.set(/*val*/ 0);
         self.state.reset();
         self.apply_filter();
@@ -961,16 +1004,22 @@ impl ListSelectionView {
 
     fn stop_on_demand_search(&mut self) {
         self.search_active = false;
-        self.search_query.clear();
-        self.apply_filter();
+        self.edit_search_query(String::clear);
     }
 
     pub(crate) fn set_search_query(&mut self, query: String) {
         let selected_actual_idx = self.selected_actual_idx();
+        let changes_item_source =
+            self.search_items_active() != (!query.is_empty() && !self.search_items.is_empty());
         self.search_active = true;
         self.search_query = query;
-        self.state.selected_idx = None;
-        self.initial_selected_idx = selected_actual_idx;
+        if changes_item_source {
+            self.state.reset();
+            self.initial_selected_idx = None;
+        } else {
+            self.state.selected_idx = None;
+            self.initial_selected_idx = selected_actual_idx;
+        }
         self.apply_filter();
     }
 
@@ -993,6 +1042,53 @@ impl ListSelectionView {
                         .iter()
                         .map(|hint| wrap_styled_line(hint, width).len()),
                 )
+                .chain(
+                    self.items
+                        .iter()
+                        .chain(self.search_items.iter())
+                        .chain(self.tabs.iter().flat_map(|tab| tab.items.iter()))
+                        .flat_map(|item| {
+                            [
+                                item.footer_hint.as_ref().or_else(|| {
+                                    item.secondary_action
+                                        .as_ref()
+                                        .map(|action| &action.footer_hint)
+                                }),
+                                item.search_footer_hint.as_ref(),
+                            ]
+                            .into_iter()
+                            .flatten()
+                        })
+                        .map(|hint| wrap_styled_line(hint, width).len()),
+                )
+                .max()
+                .unwrap_or(lines.len());
+            lines.resize(height.max(lines.len()), Line::default());
+        }
+        lines
+    }
+
+    fn footer_note_lines(&self, width: u16, show_selected_description: bool) -> Vec<Line<'static>> {
+        let wrap = |line| word_wrap_lines([line], usize::from(width.max(1)));
+        let note = if show_selected_description {
+            self.selected_actual_idx()
+                .and_then(|idx| self.active_items().get(idx))
+                .and_then(|item| item.description.as_ref())
+                .map(|description| Line::from(description.clone()).dim())
+        } else {
+            None
+        }
+        .or_else(|| self.footer_note.clone());
+        let mut lines = note.map(&wrap).unwrap_or_default();
+        if self.reserve_result_rows && show_selected_description {
+            let height = self
+                .items
+                .iter()
+                .chain(self.search_items.iter())
+                .chain(self.tabs.iter().flat_map(|tab| tab.items.iter()))
+                .filter_map(|item| item.description.as_deref())
+                .map(|description| wrap(Line::from(description).dim()).len())
+                .chain(self.footer_note.iter().map(|note| wrap(note.clone()).len()))
                 .max()
                 .unwrap_or(lines.len());
             lines.resize(height.max(lines.len()), Line::default());
@@ -1212,8 +1308,9 @@ impl BottomPaneView for ListSelectionView {
                 code: KeyCode::Backspace,
                 ..
             } if search_field_visible => {
-                self.search_query.pop();
-                self.apply_filter();
+                self.edit_search_query(|query| {
+                    query.pop();
+                });
             }
             KeyEvent {
                 code: KeyCode::Char(' '),
@@ -1274,8 +1371,7 @@ impl BottomPaneView for ListSelectionView {
                 && !modifiers.contains(KeyModifiers::CONTROL)
                 && !modifiers.contains(KeyModifiers::ALT) =>
             {
-                self.search_query.push(c);
-                self.apply_filter();
+                self.edit_search_query(|query| query.push(c));
             }
             KeyEvent {
                 code: KeyCode::Char(c),
@@ -1314,8 +1410,7 @@ impl BottomPaneView for ListSelectionView {
         let Some(pasted) = normalize_pasted_search_query(&pasted) else {
             return false;
         };
-        self.search_query.push_str(&pasted);
-        self.apply_filter();
+        self.edit_search_query(|query| query.push_str(&pasted));
         true
     }
 
@@ -1437,11 +1532,17 @@ impl Renderable for ListSelectionView {
             }
         }
 
-        if let Some(note) = &self.footer_note {
-            let note_width = width.saturating_sub(2);
-            let note_lines = wrap_styled_line(note, note_width);
-            height = height.saturating_add(note_lines.len() as u16);
-        }
+        let show_selected_description = should_show_selected_description_below(
+            &rows,
+            &self.state,
+            self.max_visible_rows,
+            effective_rows_width,
+            column_width,
+        );
+        height = height.saturating_add(
+            self.footer_note_lines(width.saturating_sub(/*rhs*/ 2), show_selected_description)
+                .len() as u16,
+        );
         height = height.saturating_add(
             self.footer_hint_lines(width.saturating_sub(/*rhs*/ 2))
                 .len() as u16,
@@ -1456,16 +1557,29 @@ impl Renderable for ListSelectionView {
             return;
         }
         let search_field_visible = self.search_field_visible();
-
+        let inner_width = popup_content_width(area.width);
+        let side_w = self.side_layout_width(inner_width);
+        let effective_rows_width = if let Some(sw) = side_w {
+            area.width
+                .saturating_sub(MENU_SURFACE_HORIZONTAL_INSET / 2 + SIDE_CONTENT_GAP + sw)
+        } else {
+            area.width
+        };
+        let rows = self.build_rows();
+        let column_width = ColumnWidthConfig::new(self.col_width_mode, self.name_column_width)
+            .with_description_layout(self.description_layout);
+        let show_selected_description = should_show_selected_description_below(
+            &rows,
+            &self.state,
+            self.max_visible_rows,
+            effective_rows_width,
+            column_width,
+        );
         let note_width = area.width.saturating_sub(2);
-        let note_lines = self
-            .footer_note
-            .as_ref()
-            .map(|note| wrap_styled_line(note, note_width));
-        let note_height = note_lines.as_ref().map_or(0, |lines| lines.len() as u16);
+        let note_lines = self.footer_note_lines(note_width, show_selected_description);
+        let note_height = note_lines.len() as u16;
         let hint_lines = self.footer_hint_lines(note_width);
         let hint_height = hint_lines.len() as u16;
-        let inner_width = popup_content_width(area.width);
         let header_height = self.header_height(inner_width);
         let tab_height = tab_bar_height(&self.tabs, inner_width);
         let mut footer_rows = note_height + hint_height;
@@ -1502,21 +1616,7 @@ impl Renderable for ListSelectionView {
             content_area
         };
 
-        let side_w = self.side_layout_width(inner_width);
-
-        // When side-by-side is active, shrink the list to make room.
-        let effective_rows_width = if let Some(sw) = side_w {
-            outer_content_area
-                .width
-                .saturating_sub(MENU_SURFACE_HORIZONTAL_INSET / 2 + SIDE_CONTENT_GAP + sw)
-        } else {
-            outer_content_area.width
-        };
-
         let header = self.active_header(inner_width);
-        let rows = self.build_rows();
-        let column_width = ColumnWidthConfig::new(self.col_width_mode, self.name_column_width)
-            .with_description_layout(self.description_layout);
         let rows_height = match self.row_display {
             SelectionRowDisplay::Wrapped => measure_rows_height_with_col_width_mode(
                 &rows,
@@ -1711,14 +1811,14 @@ impl Renderable for ListSelectionView {
             ])
             .areas(footer_area);
 
-            if let Some(lines) = note_lines {
+            if !note_lines.is_empty() {
                 let note_area = Rect {
                     x: note_area.x + 2,
                     y: note_area.y,
                     width: note_area.width.saturating_sub(2),
                     height: note_area.height,
                 };
-                for (idx, line) in lines.iter().enumerate() {
+                for (idx, line) in note_lines.iter().enumerate() {
                     if idx as u16 >= note_area.height {
                         break;
                     }

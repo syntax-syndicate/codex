@@ -426,6 +426,15 @@ impl BottomPane {
         self.request_redraw();
     }
 
+    pub(crate) fn set_motion_preferences(&mut self, tui: &codex_config::types::Tui) {
+        self.animations_enabled = tui.animations;
+        self.effects = tui.effects;
+        if let Some(status) = self.status.as_mut() {
+            status.set_motion_preferences(tui);
+        }
+        self.request_redraw();
+    }
+
     /// Mirrors the effective reasoning effort into the composer so its next
     /// visible frame can play a one-shot Max/Ultra effect.
     pub(crate) fn set_active_reasoning_effort(&mut self, effort: Option<&ReasoningEffort>) {

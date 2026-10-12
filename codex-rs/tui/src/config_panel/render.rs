@@ -5,6 +5,7 @@ use super::ConfigPreference;
 use super::ConfigSection;
 use super::ConfigSetting;
 use super::ConfigSettingValue;
+use super::ConfigToggle;
 use super::PickerState;
 use super::ResumeCurrentAvailability;
 use crate::app_event::AppEvent;
@@ -12,7 +13,9 @@ use crate::app_event_sender::AppEventSender;
 use crate::bottom_pane::ColumnWidthMode;
 use crate::bottom_pane::ListSelectionView;
 use crate::bottom_pane::PickerSurface;
+use crate::bottom_pane::SELECTION_TOGGLE_UNAVAILABLE_PREFIX;
 use crate::bottom_pane::SearchMode;
+use crate::bottom_pane::SelectionDescriptionLayout;
 use crate::bottom_pane::SelectionItem;
 use crate::bottom_pane::SelectionRowDisplay;
 use crate::bottom_pane::SelectionTab;
@@ -31,7 +34,71 @@ use ratatui::layout::Rect;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use unicode_width::UnicodeWidthStr;
+
+pub(crate) const EFFECTS_VIEW_ID: &str = "config-effects";
+
+pub(crate) fn effects(tui: &codex_config::types::Tui, keymap: &ListKeymap) -> SelectionViewParams {
+    let footer_hint = [(ListAction::Accept, "toggle"), (ListAction::Cancel, "back")]
+        .into_iter()
+        .filter_map(|(action, label)| {
+            keymap
+                .primary_hint(action)
+                .map(|hint| (hint.display_label(), label.into()))
+        })
+        .collect::<Vec<_>>();
+    let settings = [
+        (
+            "Animations",
+            "Animate the welcome screen, working indicator, and transitions",
+            ConfigToggle::Animations,
+        ),
+        (
+            "Composer stars",
+            "Show stars briefly for new Astra tasks",
+            ConfigToggle::ComposerStars,
+        ),
+    ];
+    SelectionViewParams {
+        view_id: Some(EFFECTS_VIEW_ID),
+        title: Some("Effects".to_string()),
+        subtitle: Some("Configure visual effects".to_string()),
+        footer_hint: Some(footer_hint_items_line(&footer_hint)),
+        allow_input_when_disconnected: true,
+        items: settings
+            .into_iter()
+            .map(|(label, description, setting)| {
+                let enabled = setting.enabled(tui);
+                let next_enabled = AtomicBool::new(!enabled);
+                let available = setting != ConfigToggle::ComposerStars || tui.animations;
+                SelectionItem {
+                    name: label.to_string(),
+                    toggle_placeholder: Some(if !available {
+                        SELECTION_TOGGLE_UNAVAILABLE_PREFIX
+                    } else if enabled {
+                        "[x] "
+                    } else {
+                        "[ ] "
+                    }),
+                    description: available.then(|| description.to_string()),
+                    disabled_reason: (!available)
+                        .then(|| "Turn on Animations to show Astra task stars".to_string()),
+                    actions: vec![Box::new(move |tx| {
+                        tx.send(AppEvent::SaveConfigPreference(ConfigPreference::Toggle {
+                            setting,
+                            enabled: next_enabled.fetch_xor(/*val*/ true, Ordering::Relaxed),
+                        }));
+                    })],
+                    dismiss_on_select: false,
+                    ..Default::default()
+                }
+            })
+            .collect(),
+        ..SelectionViewParams::picker()
+    }
+}
 
 pub(crate) fn notification_condition(
     tui: &codex_config::types::Tui,
@@ -47,8 +114,7 @@ pub(crate) fn notification_condition(
     SelectionViewParams {
         title: Some("Notify when".to_string()),
         subtitle: Some(
-            "Only notify while you are away, or allow notifications while this terminal is focused too."
-                .to_string(),
+            "Notify only while you are away or while this terminal is focused too".to_string(),
         ),
         footer_hint: Some(picker_hint_line_for_keymap(keymap)),
         initial_selected_idx: conditions
@@ -88,7 +154,8 @@ pub(crate) fn copy_on_select(
     SelectionViewParams {
         title: Some("Copy on select".to_string()),
         subtitle: Some(
-            "Copy transcript selections on release. Auto uses terminal defaults.".to_string(),
+            "Copy transcript selections on release, with Auto following terminal defaults"
+                .to_string(),
         ),
         footer_hint: Some(picker_hint_line_for_keymap(keymap)),
         initial_selected_idx: modes.iter().position(|(_, mode)| *mode == current),
@@ -161,7 +228,7 @@ pub(crate) fn session_picker_layout(
     SelectionViewParams {
         title: Some("Session picker layout".to_string()),
         subtitle: Some(
-            "Choose tighter rows or a roomier list when resuming and forking conversations."
+            "Choose tighter rows or a roomier list when resuming and forking conversations"
                 .to_string(),
         ),
         footer_hint: Some(picker_hint_line_for_keymap(keymap)),
@@ -201,7 +268,7 @@ pub(crate) fn resume_directory(
     SelectionViewParams {
         title: Some("Resume directory".to_string()),
         subtitle: Some(
-            "Choose which working directory to use when the current directory and saved session differ. A directory passed with --cd takes precedence for that Codex session."
+            "Choose the working directory when resuming, with --cd taking precedence for this session"
                 .to_string(),
         ),
         footer_hint: Some(picker_hint_line_for_keymap(keymap)),
@@ -218,7 +285,7 @@ pub(crate) fn resume_directory(
                         ResumeCurrentAvailability::RequiresCwdOverride
                     )
                 {
-                    Some("Requires --cd for remote sessions.".to_string())
+                    Some("Requires --cd for remote sessions".to_string())
                 } else {
                     None
                 },
@@ -251,15 +318,19 @@ impl Renderable for ConfigPanelHeader {
     }
 }
 
-fn header(summary: String) -> Box<dyn Renderable> {
+fn header(notice: Option<String>) -> Box<dyn Renderable> {
+    let subtitle = notice.unwrap_or_else(|| "Changes save automatically".to_string());
     Box::new(ConfigPanelHeader(vec![
         Line::from("Configuration".bold()),
-        Line::from("Changes save automatically; some apply after restarting Codex.".dim()),
-        Line::from(summary.dim()),
+        Line::from(subtitle.dim()),
     ]))
 }
 
-fn hint(keymap: &ListKeymap, search: Option<KeyBinding>) -> Line<'static> {
+fn hint(
+    keymap: &ListKeymap,
+    search: Option<KeyBinding>,
+    accept_label: Option<&str>,
+) -> Line<'static> {
     let key_label = |action| {
         keymap.primary_hint(action).map(|hint| {
             hint.display_label()
@@ -280,14 +351,72 @@ fn hint(keymap: &ListKeymap, search: Option<KeyBinding>) -> Line<'static> {
         items.push((search.display_label(), "search".into()));
     }
     items.extend(
-        [
-            (ListAction::Accept, "edit setting"),
-            (ListAction::Cancel, "close"),
-        ]
-        .into_iter()
-        .filter_map(|(action, label)| key_label(action).map(|key| (key, label.into()))),
+        accept_label
+            .map(|label| (ListAction::Accept, label))
+            .into_iter()
+            .chain([(ListAction::Cancel, "clear search/close")])
+            .filter_map(|(action, label)| key_label(action).map(|key| (key, label.into()))),
     );
     footer_hint_items_line(&items)
+}
+
+#[derive(Clone, Copy)]
+enum SettingItemContext {
+    Group,
+    Search,
+}
+
+fn setting_item(
+    setting: &ConfigSetting,
+    keymap: &ListKeymap,
+    search_hint: Option<KeyBinding>,
+    context: SettingItemContext,
+) -> SelectionItem {
+    let (unavailable, accept_label) = match &setting.value {
+        ConfigSettingValue::DependentToggle {
+            dependency_met: false,
+            unavailable_reason,
+            ..
+        } => (Some(*unavailable_reason), None),
+        ConfigSettingValue::Unavailable { reason } => (Some(*reason), None),
+        ConfigSettingValue::Toggle { .. } | ConfigSettingValue::DependentToggle { .. } => {
+            (None, Some("toggle"))
+        }
+        ConfigSettingValue::Editor { .. } => (None, Some("open")),
+        ConfigSettingValue::NotificationTest => (None, Some("test")),
+    };
+    let value_label = setting.value.label();
+    let description = unavailable.unwrap_or(setting.description);
+    let search_footer_hint = footer_hint_items_line(
+        &accept_label
+            .map(|label| ("enter".to_string(), label.to_string()))
+            .into_iter()
+            .chain([("esc".to_string(), "clear search".to_string())])
+            .collect::<Vec<_>>(),
+    );
+    let description = match context {
+        SettingItemContext::Group => description.to_string(),
+        SettingItemContext::Search => {
+            format!("{} · {description}", setting.section.title())
+        }
+    };
+    SelectionItem {
+        name: setting.label.to_string(),
+        category_tag: Some(format!("{value_label:<20}")),
+        description: Some(description),
+        is_disabled: unavailable.is_some(),
+        footer_hint: Some(hint(keymap, search_hint, accept_label)),
+        search_footer_hint: Some(search_footer_hint),
+        search_value: Some(format!(
+            "{} {} {} {} {}",
+            setting.section.title(),
+            setting.label,
+            value_label,
+            setting.keywords,
+            setting.description
+        )),
+        ..Default::default()
+    }
 }
 
 pub(super) fn picker(
@@ -296,12 +425,6 @@ pub(super) fn picker(
     keymap: ListKeymap,
     state: PickerState,
 ) -> ListSelectionView {
-    let summary = |count| {
-        state
-            .notice
-            .clone()
-            .unwrap_or_else(|| format!("Settings in this group: {count}."))
-    };
     let search = crate::key_hint::plain(KeyCode::Char('/'));
     let (search_code, search_modifiers) = search.parts();
     let search_event = KeyEvent::new(search_code, search_modifiers);
@@ -323,10 +446,17 @@ pub(super) fn picker(
         reserve_result_rows: true,
         row_display: SelectionRowDisplay::SingleLine,
         col_width_mode: ColumnWidthMode::AutoAllRows,
-        footer_hint: Some(hint(&keymap, search_hint)),
+        description_layout: SelectionDescriptionLayout::SelectedBelowWhenNarrow {
+            min_description_width: 45,
+        },
+        footer_hint: Some(hint(&keymap, search_hint, /*accept_label*/ None)),
         is_searchable: true,
         search_mode: SearchMode::OnDemand(search),
         search_placeholder: Some("Type to search settings".to_string()),
+        search_items: settings
+            .iter()
+            .map(|setting| setting_item(setting, &keymap, search_hint, SettingItemContext::Search))
+            .collect(),
         name_column_width: settings
             .iter()
             .map(|setting| UnicodeWidthStr::width(setting.label))
@@ -334,49 +464,16 @@ pub(super) fn picker(
         tabs: ConfigSection::ALL
             .iter()
             .map(|section| {
-                let group = settings
-                    .iter()
-                    .filter(|setting| setting.section == *section)
-                    .collect::<Vec<_>>();
                 let title = section.title();
                 SelectionTab {
                     id: title.to_string(),
                     label: title.to_string(),
-                    header: header(summary(group.len())),
-                    items: group
-                        .into_iter()
+                    header: header(state.notice.clone()),
+                    items: settings
+                        .iter()
+                        .filter(|setting| setting.section == *section)
                         .map(|setting| {
-                            let unavailable = match &setting.value {
-                                ConfigSettingValue::DependentToggle {
-                                    dependency_met: false,
-                                    unavailable_reason,
-                                    ..
-                                } => Some(*unavailable_reason),
-                                ConfigSettingValue::Unavailable { reason } => Some(*reason),
-                                ConfigSettingValue::Toggle { .. }
-                                | ConfigSettingValue::DependentToggle { .. }
-                                | ConfigSettingValue::Editor { .. }
-                                | ConfigSettingValue::NotificationTest => None,
-                            };
-                            let value_label = setting.value.label();
-                            SelectionItem {
-                                name: setting.display_label(),
-                                description: Some(format!(
-                                    "{:<19}  {}",
-                                    value_label,
-                                    unavailable.unwrap_or(setting.description)
-                                )),
-                                is_disabled: unavailable.is_some(),
-                                search_value: Some(format!(
-                                    "{} {} {} {} {}",
-                                    section.title(),
-                                    setting.label,
-                                    value_label,
-                                    setting.keywords,
-                                    setting.description
-                                )),
-                                ..Default::default()
-                            }
+                            setting_item(setting, &keymap, search_hint, SettingItemContext::Group)
                         })
                         .collect(),
                 }
