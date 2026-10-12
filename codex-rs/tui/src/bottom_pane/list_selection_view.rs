@@ -142,6 +142,13 @@ pub(crate) struct SelectionToggle {
     pub action: Box<SelectionToggleAction>,
 }
 
+/// A displayed toggle value with the number of its save actions still in flight.
+#[derive(Clone, Copy)]
+pub(crate) struct SelectionToggleState {
+    pub is_on: bool,
+    pub pending_actions: usize,
+}
+
 /// Callback invoked whenever the highlighted item changes (arrow keys, search
 /// filter, number-key jump).  Receives the *actual* index into the unfiltered
 /// `items` list and the event sender.  Used by the theme picker for live preview.
@@ -165,6 +172,10 @@ pub(crate) struct SelectionItem {
     pub child_label: Option<char>,
     pub name_prefix_spans: Vec<Span<'static>>,
     pub toggle: Option<SelectionToggle>,
+    /// Render `[x]` and treat the primary accept key as a toggle action.
+    pub checkbox_toggle: bool,
+    /// Toggle actions sent from this row that have not finished saving yet.
+    pub pending_toggle_actions: usize,
     pub toggle_placeholder: Option<&'static str>,
     pub display_shortcut: Option<ShortcutHint>,
     /// Required row metadata retained when the secondary description hides.
@@ -378,23 +389,29 @@ pub(crate) struct ListSelectionView {
 }
 
 const SELECTION_TOGGLE_ON_PREFIX: &str = "[*] ";
+const SELECTION_CHECKBOX_ON_PREFIX: &str = "[x] ";
 const SELECTION_TOGGLE_OFF_PREFIX: &str = "[ ] ";
 pub(crate) const SELECTION_TOGGLE_UNAVAILABLE_PREFIX: &str = "[-] ";
 pub(crate) const SELECTION_TOGGLE_BLOCKED_PREFIX: &str = "[!] ";
 
-fn selection_toggle_prefix(toggle: &SelectionToggle) -> &'static str {
+fn selection_toggle_prefix(item: &SelectionItem, toggle: &SelectionToggle) -> &'static str {
     if toggle.is_on {
-        SELECTION_TOGGLE_ON_PREFIX
+        if item.checkbox_toggle {
+            SELECTION_CHECKBOX_ON_PREFIX
+        } else {
+            SELECTION_TOGGLE_ON_PREFIX
+        }
     } else {
         SELECTION_TOGGLE_OFF_PREFIX
     }
 }
 
 fn selection_item_toggle_prefix(item: &SelectionItem) -> Option<&'static str> {
-    item.toggle
-        .as_ref()
-        .map(selection_toggle_prefix)
-        .or(item.toggle_placeholder)
+    item.toggle_placeholder.or_else(|| {
+        item.toggle
+            .as_ref()
+            .map(|toggle| selection_toggle_prefix(item, toggle))
+    })
 }
 
 impl ListSelectionView {
@@ -430,6 +447,7 @@ impl ListSelectionView {
         };
 
         toggle.is_on = !toggle.is_on;
+        item.pending_toggle_actions = item.pending_toggle_actions.saturating_add(/*rhs*/ 1);
         (toggle.action)(toggle.is_on, &app_event_tx);
     }
 }
@@ -941,6 +959,15 @@ impl ListSelectionView {
 
     fn accept(&mut self, kind: SelectionActionKind) {
         let selected_actual_idx = self.selected_actual_idx();
+        if matches!(kind, SelectionActionKind::Primary)
+            && selected_actual_idx
+                .and_then(|idx| self.active_items().get(idx))
+                .is_some_and(|item| item.checkbox_toggle)
+        {
+            self.toggle_selected();
+            self.last_selected_actual_idx = selected_actual_idx;
+            return;
+        }
         if let Some(item) = selected_actual_idx.and_then(|idx| self.active_items().get(idx)) {
             if item.is_disabled || item.disabled_reason.is_some() {
                 return;
@@ -1317,6 +1344,7 @@ impl BottomPaneView for ListSelectionView {
                 modifiers: KeyModifiers::NONE,
                 ..
             } if self.selected_item_has_toggle()
+                && self.keymap.action_for(key_event).is_none()
                 && (!search_field_visible
                     || matches!(self.search_mode, SearchMode::Immediate)
                         && self.search_query.is_empty()) =>
@@ -1436,6 +1464,28 @@ impl BottomPaneView for ListSelectionView {
 
     fn selected_index(&self) -> Option<usize> {
         self.selected_actual_idx()
+    }
+
+    fn selection_toggle_states(&self) -> Vec<Option<SelectionToggleState>> {
+        self.active_items()
+            .iter()
+            .map(|item| {
+                item.toggle
+                    .as_ref()
+                    .filter(|_| item.pending_toggle_actions > 0)
+                    .map(|toggle| SelectionToggleState {
+                        is_on: toggle.is_on,
+                        pending_actions: item.pending_toggle_actions,
+                    })
+            })
+            .collect()
+    }
+
+    fn complete_selection_toggle(&mut self, index: usize) {
+        if let Some(item) = self.active_items_mut().get_mut(index) {
+            item.pending_toggle_actions =
+                item.pending_toggle_actions.saturating_sub(/*rhs*/ 1);
+        }
     }
 
     fn search_query(&self) -> Option<&str> {
@@ -2528,6 +2578,43 @@ mod tests {
             rx.try_recv().is_err(),
             "expected the configured move-down binding not to fire the toggle action"
         );
+    }
+
+    #[test]
+    fn configured_cancel_binding_takes_precedence_over_space_toggle() {
+        let (tx_raw, mut rx) = unbounded_channel::<AppEvent>();
+        let tx = AppEventSender::new(tx_raw);
+        let mut keymap = crate::keymap::RuntimeKeymap::defaults().list;
+        keymap.cancel = vec![crate::key_hint::plain(KeyCode::Char(' '))];
+        let mut view = ListSelectionView::new(
+            SelectionViewParams {
+                items: vec![SelectionItem {
+                    name: "Animations".to_string(),
+                    toggle: Some(SelectionToggle {
+                        is_on: true,
+                        action: Box::new(|_enabled, tx: &_| {
+                            tx.send(AppEvent::OpenApprovalsPopup);
+                        }),
+                    }),
+                    checkbox_toggle: true,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            tx,
+            keymap,
+        );
+
+        view.handle_key_event(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+
+        assert_eq!(view.completion, Some(ViewCompletion::Cancelled));
+        assert!(
+            view.active_items()[0]
+                .toggle
+                .as_ref()
+                .is_some_and(|toggle| toggle.is_on)
+        );
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]

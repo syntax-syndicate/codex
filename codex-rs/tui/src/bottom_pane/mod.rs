@@ -177,6 +177,7 @@ pub(crate) use list_selection_view::SearchMode;
 pub(crate) use list_selection_view::SelectionDescriptionLayout;
 pub(crate) use list_selection_view::SelectionRowDisplay;
 pub(crate) use list_selection_view::SelectionToggle;
+pub(crate) use list_selection_view::SelectionToggleState;
 pub(crate) use list_selection_view::SelectionViewParams;
 pub(crate) use list_selection_view::SideContentWidth;
 pub(crate) use list_selection_view::popup_content_width;
@@ -1624,6 +1625,30 @@ impl BottomPane {
             .last()
             .filter(|view| view.view_id() == Some(view_id))
             .and_then(|view| view.selected_index())
+    }
+
+    pub(crate) fn selection_toggle_states_for_active_view(
+        &self,
+        view_id: &'static str,
+    ) -> Option<Vec<Option<SelectionToggleState>>> {
+        self.view_stack
+            .last()
+            .filter(|view| view.view_id() == Some(view_id))
+            .map(|view| view.selection_toggle_states())
+    }
+
+    pub(crate) fn complete_selection_toggle_for_active_view(
+        &mut self,
+        view_id: &'static str,
+        index: usize,
+    ) {
+        if let Some(view) = self
+            .view_stack
+            .last_mut()
+            .filter(|view| view.view_id() == Some(view_id))
+        {
+            view.complete_selection_toggle(index);
+        }
     }
 
     pub(crate) fn selected_index_for_present_view(&self, view_id: &'static str) -> Option<usize> {

@@ -102,8 +102,13 @@ impl App {
         } else {
             None
         };
-        self.chat_widget
-            .refresh_config_panel(notice.map(str::to_string));
+        let notice = notice.map(str::to_string);
+        if effective {
+            self.chat_widget
+                .refresh_config_panel_after_effective_save(notice, preference);
+        } else {
+            self.chat_widget.refresh_config_panel(notice);
+        }
         tui.frame_requester().schedule_frame();
     }
 }

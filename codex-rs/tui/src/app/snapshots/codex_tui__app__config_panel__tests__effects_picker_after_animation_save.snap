@@ -6,8 +6,8 @@ expression: "render_bottom_popup(&app.chat_widget, 80)"
   Configure visual effects
 
 
-› 1. [x] Animations      Animate the welcome screen, working indicator, and
-                         transitions
-  2. [x] Composer stars  Show stars briefly for new Astra tasks
+› 1. [ ] Animations                 Animate the welcome screen, working
+                                    indicator, and transitions
+     [-] Composer stars (disabled)  Turn on Animations to show Astra task stars
 
   enter toggle · esc back

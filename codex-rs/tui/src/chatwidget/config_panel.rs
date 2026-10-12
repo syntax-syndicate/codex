@@ -119,6 +119,50 @@ impl ChatWidget {
     }
 
     pub(crate) fn refresh_config_panel(&mut self, notice: Option<String>) -> bool {
+        self.refresh_config_panel_with_effects_state(notice, Vec::new())
+    }
+
+    /// Refresh after an effective save without discarding newer Effects choices still queued.
+    pub(crate) fn refresh_config_panel_after_effective_save(
+        &mut self,
+        notice: Option<String>,
+        preference: ConfigPreference,
+    ) -> bool {
+        if let ConfigPreference::Toggle { setting, .. } = preference {
+            match setting {
+                ConfigToggle::Animations => {
+                    self.bottom_pane.complete_selection_toggle_for_active_view(
+                        crate::config_panel::EFFECTS_VIEW_ID,
+                        /*index*/ 0,
+                    );
+                }
+                ConfigToggle::ComposerStars => {
+                    self.bottom_pane.complete_selection_toggle_for_active_view(
+                        crate::config_panel::EFFECTS_VIEW_ID,
+                        /*index*/ 1,
+                    );
+                }
+                ConfigToggle::AutomaticRecaps
+                | ConfigToggle::CopyOnSelectClearSelection
+                | ConfigToggle::Notifications
+                | ConfigToggle::PasteDetection
+                | ConfigToggle::StartInVimMode
+                | ConfigToggle::StatusLineColors
+                | ConfigToggle::Tips => {}
+            }
+        }
+        let toggle_states = self
+            .bottom_pane
+            .selection_toggle_states_for_active_view(crate::config_panel::EFFECTS_VIEW_ID)
+            .unwrap_or_default();
+        self.refresh_config_panel_with_effects_state(notice, toggle_states)
+    }
+
+    fn refresh_config_panel_with_effects_state(
+        &mut self,
+        notice: Option<String>,
+        effects_toggle_states: Vec<Option<crate::bottom_pane::SelectionToggleState>>,
+    ) -> bool {
         let panel_updated = self.bottom_pane.update_config_panel(&ConfigPanelUpdate {
             tui: self.config_panel_tui.clone(),
             keymap: self.bottom_pane.list_keymap(),
@@ -132,7 +176,11 @@ impl ChatWidget {
             return panel_updated;
         };
         let keymap = self.bottom_pane.list_keymap();
-        let mut params = crate::config_panel::effects(&self.config_panel_tui, &keymap);
+        let mut params = crate::config_panel::effects_with_toggle_states(
+            &self.config_panel_tui,
+            &keymap,
+            &effects_toggle_states,
+        );
         params.initial_selected_idx = Some(selected_idx);
         params.subtitle = notice.or(params.subtitle);
         let effects_updated = self

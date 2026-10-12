@@ -9,6 +9,7 @@ mod toggle;
 pub(crate) use render::EFFECTS_VIEW_ID;
 pub(crate) use render::copy_on_select;
 pub(crate) use render::effects;
+pub(crate) use render::effects_with_toggle_states;
 pub(crate) use render::notification_condition;
 pub(crate) use render::resume_directory;
 pub(crate) use render::right_click_paste;
