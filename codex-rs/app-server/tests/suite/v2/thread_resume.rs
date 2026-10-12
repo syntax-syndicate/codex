@@ -156,6 +156,10 @@ use super::analytics::wait_for_analytics_payload;
 use super::analytics::wait_for_goal_event;
 use super::analytics::wait_for_matching_analytics_event;
 
+#[cfg(target_os = "linux")]
+#[path = "thread_resume_network_tests.rs"]
+mod network_tests;
+
 #[cfg(windows)]
 const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(25);
 #[cfg(not(windows))]
