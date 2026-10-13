@@ -377,6 +377,7 @@ pub(super) enum HistoryCapabilities {
     ThreadStartDuringLegacyShutdown,
     ConfigReadUnsupported(i64),
     ConfigReadFails,
+    SuperBindingsUnsupported,
     ConfigReadUnknownVoice,
     VoiceCatalogCustom,
     VoiceCatalogUnavailable,
@@ -653,6 +654,18 @@ pub(super) async fn start_recording_app_server_with_realtime_speech(
                                 code: -32603,
                                 data: None,
                                 message: "config temporarily unavailable".to_string(),
+                            },
+                        })
+                    } else if history_capabilities == HistoryCapabilities::SuperBindingsUnsupported
+                        && request.method == "config/value/write"
+                    {
+                        JSONRPCMessage::Error(JSONRPCError {
+                            id: request_id,
+                            error: JSONRPCErrorError {
+                                code: -32600,
+                                data: None,
+                                message: "Invalid configuration: unknown key `super-left`"
+                                    .to_string(),
                             },
                         })
                     } else if history_capabilities == HistoryCapabilities::VoiceCatalogUnavailable
