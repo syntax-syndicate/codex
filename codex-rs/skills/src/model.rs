@@ -63,8 +63,6 @@ impl EnvironmentSkillMetadata {
 #[serde(rename_all = "camelCase")]
 pub struct SkillPolicy {
     pub allow_implicit_invocation: Option<bool>,
-    // TODO: Enforce product gating in Codex skill selection/injection instead of only parsing and
-    // storing this metadata.
     pub products: Vec<Product>,
 }
 
