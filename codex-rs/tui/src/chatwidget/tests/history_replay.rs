@@ -16,6 +16,7 @@ use pretty_assertions::assert_eq;
 #[tokio::test]
 async fn resumed_initial_messages_render_history() {
     let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.set_feature_enabled(Feature::CliDaybreak, /*enabled*/ false);
 
     let thread_id = ThreadId::new();
     let rollout_file = NamedTempFile::new().unwrap();

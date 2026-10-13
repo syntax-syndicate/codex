@@ -65,9 +65,6 @@ async fn daybreak_command_persists_and_confirms_each_selection() -> Result<()> {
     use codex_protocol::turn_input::CyberAccessProgram;
 
     let (mut app, mut events, mut ops) = make_test_app_with_channels().await;
-    app.config.features.enable(Feature::CliDaybreak)?;
-    app.chat_widget
-        .set_feature_enabled(Feature::CliDaybreak, /*enabled*/ true);
     let (mut server, requests, proxy) = start_recording_app_server(
         &app.config,
         /*blocked_thread_list*/ None,
@@ -1860,18 +1857,57 @@ async fn embedded_server_rejects_unowned_dynamic_tool_calls() -> Result<()> {
 
 #[tokio::test]
 async fn dynamic_tool_requests_ignore_other_namespaces_and_dispatch_tui_namespace() -> Result<()> {
-    boxed_future!(check_dynamic_tool_requests(/*rollout_enabled*/ true)).await?;
-    boxed_future!(check_dynamic_tool_requests(/*rollout_enabled*/ false)).await
+    use HistoryCapabilities::ConfigReadUnsupported;
+    use HistoryCapabilities::Current;
+    use codex_app_server_protocol::AuthMode::ApiKey;
+    use codex_app_server_protocol::AuthMode::Chatgpt;
+
+    for (
+        rollout_enabled,
+        auth_mode,
+        api_key_cyber_access_programs,
+        history_capabilities,
+        expected_program,
+    ) in [
+        (true, Chatgpt, false, Current, Some("daybreakBlue")),
+        (false, Chatgpt, false, Current, None),
+        (true, ApiKey, false, Current, None),
+        (true, ApiKey, true, Current, Some("daybreakBlue")),
+        (true, Chatgpt, false, ConfigReadUnsupported(-32601), None),
+        (true, Chatgpt, false, ConfigReadUnsupported(-32600), None),
+    ] {
+        boxed_future!(check_dynamic_tool_requests(
+            rollout_enabled,
+            auth_mode,
+            api_key_cyber_access_programs,
+            history_capabilities,
+            expected_program,
+        ))
+        .await?;
+    }
+    Ok(())
 }
 
-async fn check_dynamic_tool_requests(rollout_enabled: bool) -> Result<()> {
+async fn check_dynamic_tool_requests(
+    rollout_enabled: bool,
+    auth_mode: codex_app_server_protocol::AuthMode,
+    api_key_cyber_access_programs: bool,
+    history_capabilities: HistoryCapabilities,
+    expected_program: Option<&str>,
+) -> Result<()> {
     let (mut app, mut events, _ops) = make_test_app_with_channels().await;
     app.config
         .features
         .set_enabled(Feature::CliDaybreak, rollout_enabled)?;
+    app.config.features.set_enabled(
+        Feature::ApiKeyCyberAccessPrograms,
+        api_key_cyber_access_programs,
+    )?;
     let codex_home = tempdir()?;
     let backend = wiremock::MockServer::start().await;
     let backend_url = format!("{}/backend-api", backend.uri());
+    let api_url = format!("{}/v1", backend.uri());
+    app.config.model_provider.base_url = Some(api_url.clone());
     app.config.codex_home = codex_home.path().to_path_buf().abs();
     app.config.sqlite = SqliteConfig::new_for_testing(codex_home.path().abs());
     let mut catalog = codex_models_manager::bundled_models_response()?;
@@ -1886,7 +1922,7 @@ async fn check_dynamic_tool_requests(rollout_enabled: bool) -> Result<()> {
     std::fs::write(
         codex_home.path().join("config.toml"),
         format!(
-            "daybreak = true\nmodel_catalog_json = {:?}\nchatgpt_base_url = {backend_url:?}\ncli_auth_credentials_store = \"file\"\n",
+            "daybreak = true\nmodel_catalog_json = {:?}\nchatgpt_base_url = {backend_url:?}\ncli_auth_credentials_store = \"file\"\nopenai_base_url = {api_url:?}\n",
             catalog_path.display().to_string()
         ),
     )?;
@@ -1901,6 +1937,14 @@ async fn check_dynamic_tool_requests(rollout_enabled: bool) -> Result<()> {
         codex_login::AuthCredentialsStoreMode::File,
     )
     .expect("write fixture auth");
+    if auth_mode == codex_app_server_protocol::AuthMode::ApiKey {
+        codex_login::login_with_api_key(
+            codex_home.path(),
+            "test-key",
+            codex_login::AuthCredentialsStoreMode::File,
+            codex_login::AuthKeyringBackendKind::default(),
+        )?;
+    }
     app.config
         .permissions
         .set_permission_profile(PermissionProfile::workspace_write_with(
@@ -1909,10 +1953,13 @@ async fn check_dynamic_tool_requests(rollout_enabled: bool) -> Result<()> {
             /*exclude_tmpdir_env_var*/ true,
             /*exclude_slash_tmp*/ true,
         ))?;
-    let (mut app_server, requests, proxy) = start_recording_app_server(
+    let (mut app_server, requests, proxy) = start_recording_app_server_with_history(
         &app.config,
+        history_capabilities,
         /*blocked_thread_list*/ None,
         /*failed_thread_name*/ Some("Unavailable name"),
+        crate::app_server_session::ThreadParamsMode::Embedded,
+        LoaderOverrides::without_managed_config_for_tests(),
     )
     .await?;
     let thread_id = app_server
@@ -2181,7 +2228,10 @@ async fn check_dynamic_tool_requests(rollout_enabled: bool) -> Result<()> {
     );
     assert_eq!(
         recorded_params(&requests, "thread/start").last().unwrap()["daybreakEnabled"],
-        serde_json::json!(rollout_enabled.then_some(true))
+        serde_json::json!(
+            (rollout_enabled && history_capabilities == HistoryCapabilities::Current)
+                .then_some(true)
+        )
     );
     assert_eq!(
         recorded_params(&requests, "thread/start")
@@ -2198,7 +2248,7 @@ async fn check_dynamic_tool_requests(rollout_enabled: bool) -> Result<()> {
         .expect("background task turn request");
     assert_eq!(
         turn["cyberAccessProgram"],
-        serde_json::json!(rollout_enabled.then_some("daybreakBlue"))
+        serde_json::json!(expected_program)
     );
     assert_eq!(turn["input"], serde_json::json!([]));
     assert_eq!(
@@ -2283,7 +2333,7 @@ async fn check_dynamic_tool_requests(rollout_enabled: bool) -> Result<()> {
     let turn = &recorded_params(&requests, "turn/start")[1];
     assert_eq!(
         turn["cyberAccessProgram"],
-        serde_json::json!(rollout_enabled.then_some("daybreakBlue"))
+        serde_json::json!(expected_program)
     );
     assert_eq!(turn["input"], serde_json::json!([]));
     assert_eq!(

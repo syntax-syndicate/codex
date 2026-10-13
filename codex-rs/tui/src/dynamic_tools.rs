@@ -494,17 +494,19 @@ async fn execute_inner(
             if features.enabled(Feature::CliDaybreak)
                 && thread_start_params.daybreak_enabled.is_none()
             {
-                let defaults = crate::config_update::read_effective_config(
+                let defaults = crate::config_update::read_effective_config_if_supported(
                     handle.clone(),
-                    source_thread.cwd.to_string_lossy().into_owned(),
+                    source_thread.cwd.as_path(),
                 )
                 .await
                 .map_err(|error| error.to_string())?;
-                thread_start_params.daybreak_enabled = defaults
-                    .config
-                    .additional
-                    .get("daybreak")
-                    .and_then(Value::as_bool);
+                thread_start_params.daybreak_enabled = defaults.and_then(|defaults| {
+                    defaults
+                        .config
+                        .additional
+                        .get("daybreak")
+                        .and_then(Value::as_bool)
+                });
             }
             thread_start_params.history_mode = (source_thread.history_mode
                 == ThreadHistoryMode::Paginated)
@@ -1283,11 +1285,23 @@ async fn background_turn_program(
             },
         }),
     );
+    let account = match account {
+        Ok(response) => response.account,
+        Err(error) if enabled && provider == "openai" => {
+            return Err(format!(
+                "Could not determine Daybreak account eligibility: {error}"
+            ));
+        }
+        Err(_) => None,
+    };
+    let has_chatgpt_account = matches!(account, Some(Account::Chatgpt { .. }));
     let eligible = provider == "openai"
-        && matches!(
-            account.ok().and_then(|response| response.account),
-            Some(Account::Chatgpt { .. })
-        );
+        && (has_chatgpt_account
+            || enabled
+                && matches!(account, Some(Account::ApiKey { .. }))
+                && features.enabled(Feature::ApiKeyCyberAccessPrograms));
+    // Retain saved metadata while suppressing it for accounts that cannot use Daybreak.
+    let enabled = enabled && eligible;
     let models = models
         .map(|response| {
             response
