@@ -2947,6 +2947,10 @@
           "description": "Disable the model's direct-message tools; spawning and automatic child results remain available.",
           "type": "boolean"
         },
+        "disable_native_tools": {
+          "description": "Hide native multi-agent tools while retaining the V2 runtime for host-provided tools.",
+          "type": "boolean"
+        },
         "enabled": {
           "type": "boolean"
         },
