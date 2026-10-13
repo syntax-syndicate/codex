@@ -59,7 +59,8 @@ impl EnvironmentSkillMetadata {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SkillPolicy {
     pub allow_implicit_invocation: Option<bool>,
     // TODO: Enforce product gating in Codex skill selection/injection instead of only parsing and
@@ -77,12 +78,14 @@ pub struct SkillInterface {
     pub default_prompt: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SkillDependencies {
     pub tools: Vec<SkillToolDependency>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SkillToolDependency {
     pub r#type: String,
     pub value: String,

@@ -67,15 +67,21 @@ async fn prewarming_resolves_global_locations_without_cwd_or_config() -> anyhow:
     actual.sort_unstable_by_key(|location| location.root.to_string());
     let mut expected = vec![CapabilityLocation {
         root: request.codex_home.join("plugins/cache/team/demo/1.10.0")?,
+        standalone_root_id: None,
         plugin: Some(InstalledPlugin {
             id: "demo@team".to_string(),
             version: "1.10.0".to_string(),
             remote_plugin_id: Some("plugins~demo".to_string()),
         }),
     }];
-    for root in ["codex/skills", "home/.agents/skills", "etc/codex/skills"] {
+    for (id, root) in [
+        ("codex-home-skills", "codex/skills"),
+        ("user-agent-skills", "home/.agents/skills"),
+        ("system-skills", "etc/codex/skills"),
+    ] {
         expected.push(CapabilityLocation {
             root: PathUri::from_host_native_path(temp.path().join(root))?,
+            standalone_root_id: Some(id.to_string()),
             plugin: None,
         });
     }

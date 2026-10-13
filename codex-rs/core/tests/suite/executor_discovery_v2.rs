@@ -147,11 +147,13 @@ impl Executor {
                                     .iter().map(|root| json!({"id":root["id"],"path":root["path"]})).collect::<Vec<_>>()
                             })),
                             Some("capabilities/discoverV2") => Some(json!({
-                                "plugins":[{"id":"inert-sentinel@market","remotePluginId":null,
+                                "plugins":[{"id":"inert-sentinel@market","displayName":"inert-sentinel","remotePluginId":null,
                                     "version":"1","root":"file:///inert-sentinel",
                                     "files":{"manifest":{"path":"file:///inert-sentinel/.codex-plugin/plugin.json",
                                         "contents":"{\"name\":\"inert-sentinel\",\"mcpServers\":{\"inert-sentinel\":{\"command\":\"never-run\"}}}"},
-                                        "mcpConfig":null,"appsConfig":null},"skills":[]}],
+                                        "mcpConfig":{"path":"file:///inert-sentinel/.codex-plugin/plugin.json",
+                                            "contents":"{\"inert-sentinel\":{\"command\":\"never-run\"}}"},
+                                        "appsConfig":null},"skills":[]}],
                                 "skills":[{"name":"inert-sentinel","description":"must not enter the prompt",
                                     "shortDescription":null,"path":"file:///inert-sentinel/SKILL.md","metadata":null}],
                                 "warnings":[]

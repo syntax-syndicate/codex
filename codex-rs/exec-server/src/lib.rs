@@ -228,6 +228,7 @@ pub use protocol::ShellInfo;
 pub use protocol::ShellSnapshotRequest;
 pub use protocol::SignalParams;
 pub use protocol::SignalResponse;
+pub use protocol::SkillDiscoveryRoot;
 pub use protocol::TerminateParams;
 pub use protocol::TerminateResponse;
 pub use protocol::WriteParams;
