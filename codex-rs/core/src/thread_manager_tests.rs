@@ -1779,6 +1779,7 @@ async fn start_thread_seeds_extension_data_for_mcp_and_lifecycle_contributors() 
             },
             /*ready_selected_capability_roots*/ &[],
             /*executor_capability_discovery*/ None,
+            /*executor_capability_discovery_v2*/ None,
         )
         .await;
     let second_session = &second_thread.thread.session;
@@ -1801,6 +1802,7 @@ async fn start_thread_seeds_extension_data_for_mcp_and_lifecycle_contributors() 
             },
             /*ready_selected_capability_roots*/ &[],
             /*executor_capability_discovery*/ None,
+            /*executor_capability_discovery_v2*/ None,
         )
         .await;
 
@@ -1917,6 +1919,7 @@ async fn start_thread_seeds_extension_data_for_mcp_and_lifecycle_contributors() 
                 },
                 /*ready_selected_capability_roots*/ &[],
                 /*executor_capability_discovery*/ None,
+                /*executor_capability_discovery_v2*/ None,
             )
             .await;
         assert_eq!(

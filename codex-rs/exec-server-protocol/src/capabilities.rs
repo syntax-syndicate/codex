@@ -5,13 +5,21 @@ use codex_utils_path_uri::PathUri;
 use serde::Deserialize;
 use serde::Serialize;
 use std::fmt;
+use std::sync::Arc;
 
 use crate::CapabilityTextFile;
 use crate::DiscoveredPluginFiles;
 
 pub const CAPABILITIES_DISCOVER_V2_METHOD: &str = "capabilities/discoverV2";
 
-/// Discovers installed capabilities on the executor.
+/// Caller-bound discovery result shared by capability consumers within a model step.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExecutorCapabilityDiscoveryV2Snapshot {
+    pub environment_id: String,
+    pub result: Result<Arc<DiscoverV2CapabilitiesResponse>, String>,
+}
+
+/// Discover installed capabilities for a thread, without client-supplied installation paths.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DiscoverV2CapabilitiesRequest {

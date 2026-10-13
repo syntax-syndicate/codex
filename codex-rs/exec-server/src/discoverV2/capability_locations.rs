@@ -8,7 +8,6 @@ use std::io;
 
 use crate::LocalFileSystem;
 use crate::protocol::FsOpenMode;
-use codex_config::loader::system_config_toml_file;
 use codex_file_system::ExecutorFileSystem;
 use codex_file_system::WalkEntryKind;
 use codex_file_system::WalkOptions;
@@ -24,11 +23,12 @@ use codex_core_plugin_common::installed::parse_remote_plugin_id;
 use codex_core_plugin_common::plugin_id::PluginId;
 use tokio::io::AsyncReadExt;
 
-/// Home paths are supplied by the executor, not read from the sandbox helper's sanitized env.
+/// Fixed paths are supplied by the executor, not read from the sandbox helper's sanitized env.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct CapabilityLocationRequest {
     pub codex_home: PathUri,
     pub user_home: Option<PathUri>,
+    pub system_skills_root: Option<PathUri>,
 }
 
 const MAX_LOCATIONS: usize = 512;
@@ -73,8 +73,8 @@ pub(crate) async fn prewarm_locations(
     if let Some(home) = user_home {
         skill_roots.push(home.join(AGENTS_SKILLS_SUFFIX));
     }
-    if let Some(system_root) = system_config_toml_file()?.parent() {
-        skill_roots.push(system_root.join("skills"));
+    if let Some(system_root) = &request.system_skills_root {
+        skill_roots.push(system_root.to_abs_path()?);
     }
     CandidateCapabilityLocations::resolve(
         fs,
@@ -211,4 +211,4 @@ async fn read_remote_plugin_id(path: &std::path::Path) -> io::Result<Option<Stri
 
 #[cfg(test)]
 #[path = "tests/capability_locations_tests.rs"]
-pub(super) mod tests;
+pub(crate) mod tests;

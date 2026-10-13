@@ -14,12 +14,15 @@ use crate::LocalFileSystem;
 pub(crate) const MANIFEST: &str = r#"{"name":"demo","version":"1.10.0"}"#;
 
 pub(crate) fn request(root: &Path) -> anyhow::Result<CapabilityLocationRequest> {
-    for path in ["codex", "home", "project"] {
+    for path in ["codex", "home", "project", "etc/codex"] {
         std::fs::create_dir_all(root.join(path))?;
     }
     Ok(CapabilityLocationRequest {
         codex_home: PathUri::from_host_native_path(root.join("codex"))?,
         user_home: Some(PathUri::from_host_native_path(root.join("home"))?),
+        system_skills_root: Some(PathUri::from_host_native_path(
+            root.join("etc/codex/skills"),
+        )?),
     })
 }
 
@@ -42,6 +45,7 @@ async fn prewarming_resolves_global_locations_without_cwd_or_config() -> anyhow:
     for root in [
         "codex/skills",
         "home/.agents/skills",
+        "etc/codex/skills",
         "project/.agents/skills",
     ] {
         write(temp.path(), &format!("{root}/demo/SKILL.md"), "unparsed")?;
@@ -69,7 +73,7 @@ async fn prewarming_resolves_global_locations_without_cwd_or_config() -> anyhow:
             remote_plugin_id: Some("plugins~demo".to_string()),
         }),
     }];
-    for root in ["codex/skills", "home/.agents/skills"] {
+    for root in ["codex/skills", "home/.agents/skills", "etc/codex/skills"] {
         expected.push(CapabilityLocation {
             root: PathUri::from_host_native_path(temp.path().join(root))?,
             plugin: None,

@@ -925,6 +925,9 @@
             "executor_capability_discovery": {
               "type": "boolean"
             },
+            "executor_capability_discovery_v2": {
+              "type": "boolean"
+            },
             "experimental_use_unified_exec_tool": {
               "type": "boolean"
             },
@@ -7251,6 +7254,9 @@
           "type": "boolean"
         },
         "executor_capability_discovery": {
+          "type": "boolean"
+        },
+        "executor_capability_discovery_v2": {
           "type": "boolean"
         },
         "experimental_use_unified_exec_tool": {
