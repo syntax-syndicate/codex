@@ -1,10 +1,12 @@
 use std::sync::Arc;
+use std::sync::OnceLock;
 
 use crate::compact_retained_tool_outputs::is_retained_tool_output;
 
 use crate::Prompt;
 use crate::ResponseStream;
 use crate::client::ModelClientSession;
+use crate::client::ResponsesHttpExecutor;
 use crate::client_common::ResponseEvent;
 use crate::compact::CompactedHistoryMetadata;
 use crate::compact::CompactionAnalyticsAttempt;
@@ -64,7 +66,11 @@ use tokio_util::sync::CancellationToken;
 
 #[path = "compact_remote_v2_attempt.rs"]
 mod attempt;
+pub(crate) use attempt::BackgroundCompactionCandidate;
 use attempt::RemoteCompactV2Attempt;
+use attempt::RemoteCompactV2AttemptInput;
+pub(crate) use attempt::capture_background_input;
+pub(crate) use attempt::run_background_compaction;
 use attempt::run_remote_compact_v2_attempt;
 
 #[path = "compact_remote_v2_images.rs"]
@@ -85,8 +91,12 @@ const MAX_REMOTE_COMPACTION_V2_STREAM_RETRIES: u64 = 2;
 #[derive(Clone, Copy)]
 enum CompactionRequestKind<'a> {
     Foreground,
-    #[allow(dead_code)]
     Background(&'a CancellationToken),
+}
+
+enum CompactionRequestTransport<'a> {
+    Foreground(&'a mut ModelClientSession),
+    Background(Option<String>, Option<u64>),
 }
 
 pub(crate) async fn run_inline_remote_auto_compact_task(
@@ -250,10 +260,10 @@ async fn run_remote_compact_task_inner_impl(
     let attempt = run_remote_compact_v2_attempt(
         sess,
         step_context,
-        client_session.as_deref_mut(),
         &compaction_trace,
         compaction_metadata,
         analytics_details,
+        RemoteCompactV2AttemptInput::Foreground(client_session.as_deref_mut()),
     )
     .await;
     let (attempt, compaction_turn_context) = match attempt {
@@ -275,10 +285,10 @@ async fn run_remote_compact_task_inner_impl(
             let fallback_result = run_remote_compact_v2_attempt(
                 sess,
                 replacement_step_context,
-                client_session,
                 &fallback_compaction_trace,
                 compaction_metadata,
                 analytics_details,
+                RemoteCompactV2AttemptInput::Foreground(client_session),
             )
             .await;
             record_model_fallback(
@@ -389,11 +399,42 @@ struct RemoteCompactionV2Output {
 async fn run_remote_compaction_request_v2(
     sess: &Session,
     step_context: &StepContext,
-    client_session: &mut ModelClientSession,
     prompt: &Prompt,
     responses_metadata: &CodexResponsesMetadata,
+    transport: CompactionRequestTransport<'_>,
 ) -> CodexResult<RemoteCompactionV2Output> {
     let turn_context = &step_context.turn;
+    let client_session = match transport {
+        CompactionRequestTransport::Background(turn_state, auth_owner_generation) => {
+            let settings = &step_context.settings;
+            let cancellation = crate::session::async_compaction::shutdown_cancellation(sess).await;
+            let effort = sess
+                .reasoning_effort_for_request(settings, RequestEffortUsage::Compaction)
+                .await;
+            let trace = InferenceTraceContext::disabled();
+            // Replay the routing token without letting this request change foreground routing.
+            let turn_state = Arc::new(turn_state.map(OnceLock::from).unwrap_or_default());
+            let http_executor = ResponsesHttpExecutor::new(&sess.services.model_client);
+            let stream = tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => return Err(CodexErr::TurnAborted),
+                stream = http_executor.stream_responses_http(
+                    &turn_state, auth_owner_generation, /*event_sender*/ None, prompt, &settings.model_info, &step_context.session_telemetry, effort,
+                    settings.reasoning_summary, settings.service_tier.clone(), responses_metadata,
+                    &trace,
+                ) => stream?,
+            };
+            return collect_compaction_output(
+                sess,
+                turn_context,
+                stream,
+                CompactionRequestKind::Background(&cancellation),
+            )
+            .await;
+        }
+        CompactionRequestTransport::Foreground(client_session) => client_session,
+    };
+    let settings = &turn_context.initial_settings;
     let max_retries = turn_context
         .provider
         .info()
@@ -404,14 +445,11 @@ async fn run_remote_compaction_request_v2(
         let result = match client_session
             .stream(
                 prompt,
-                turn_context.model_info(),
+                &settings.model_info,
                 &turn_context.session_telemetry,
-                sess.reasoning_effort_for_request(
-                    &turn_context.initial_settings,
-                    RequestEffortUsage::Compaction,
-                )
-                .await,
-                turn_context.reasoning_summary(),
+                sess.reasoning_effort_for_request(settings, RequestEffortUsage::Compaction)
+                    .await,
+                settings.reasoning_summary,
                 step_context.settings.service_tier.clone(),
                 responses_metadata,
                 &InferenceTraceContext::disabled(),
@@ -429,7 +467,6 @@ async fn run_remote_compaction_request_v2(
             }
             Err(err) => Err(err),
         };
-
         match result {
             Ok(compaction_output) => return Ok(compaction_output),
             Err(err) => {

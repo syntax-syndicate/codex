@@ -237,6 +237,8 @@ use codex_protocol::error::Result as CodexResult;
 #[cfg(test)]
 use codex_protocol::exec_output::StreamOutput;
 
+#[allow(dead_code)]
+pub(crate) mod async_compaction;
 mod code_mode_warning;
 mod config_refresh;
 pub(crate) mod context_window;
@@ -445,6 +447,7 @@ pub(crate) enum ForkPersistence {
 #[derive(Clone, Copy)]
 pub(crate) struct CompactionPrefix {
     pub(crate) len: usize,
+    pub(crate) auth_owner_generation: Option<u64>,
 }
 
 pub(crate) enum CompactedHistoryInstallation<'a> {
@@ -3745,7 +3748,7 @@ impl Session {
     pub(crate) async fn record_step_world_state_if_changed(
         &self,
         step_context: &step_context::StepContext,
-    ) -> CodexResult<()> {
+    ) -> CodexResult<Arc<WorldState>> {
         let turn_context = step_context.turn.as_ref();
         // Render model-visible state from the same step used to build and run tools.
         let world_state = self
@@ -3773,7 +3776,7 @@ impl Session {
             self.persist_rollout_items(&[RolloutItem::WorldState(world_state_item)])
                 .await;
         }
-        Ok(())
+        Ok(Arc::new(world_state))
     }
 
     /// Retains the step captured for execution.
@@ -4822,7 +4825,7 @@ impl Session {
     pub(crate) async fn record_context_updates_and_set_reference_context_item(
         &self,
         step_context: &StepContext,
-    ) -> CodexResult<()> {
+    ) -> CodexResult<Arc<WorldState>> {
         let turn_context = step_context.turn.as_ref();
         let reference_context_item = {
             let state = self.state.lock().await;
@@ -4870,7 +4873,7 @@ impl Session {
         // A snapshot can change without producing model-visible or TurnContext updates.
         let only_world_state_changed = !turn_context_changed && context_items.is_empty();
         if only_world_state_changed && world_state_item.is_none() {
-            return Ok(());
+            return Ok(Arc::new(world_state));
         }
         if !context_items.is_empty() {
             self.record_conversation_items(
@@ -4887,7 +4890,7 @@ impl Session {
         }
         // A snapshot-only change does not require a duplicate TurnContext record.
         if only_world_state_changed {
-            return Ok(());
+            return Ok(Arc::new(world_state));
         }
         // Persist one `TurnContextItem` per real user turn so resume/lazy replay can recover the
         // latest durable baseline even when this turn emitted no model-visible context diffs.
@@ -4911,7 +4914,7 @@ impl Session {
         // context items.
         let mut state = self.state.lock().await;
         state.set_reference_context_item(Some(turn_context_item));
-        Ok(())
+        Ok(Arc::new(world_state))
     }
 
     pub(crate) async fn update_token_usage_info(
