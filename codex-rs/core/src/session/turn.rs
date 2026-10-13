@@ -2689,7 +2689,7 @@ async fn try_run_sampling_request(
             Ok(Err(_)) => {
                 if let Some(interrupt) = stream.interrupt.take() {
                     if step_context.settings.model_info.use_responses_lite {
-                        let _ = interrupt.send(());
+                        let _ = interrupt.send(codex_api::ResponseInterrupt::Drain);
                     }
                     // Drain the response normally before reusing its connection and history.
                     preempt = CancellationToken::new();
