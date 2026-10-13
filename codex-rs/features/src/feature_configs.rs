@@ -564,3 +564,22 @@ pub enum NetworkProxyUnixSocketPermissionToml {
     Allow,
     Deny,
 }
+
+/// Background compaction settings. A threshold alone does not enable the feature.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AsyncCompactionConfigToml {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    /// Percentage of the model's full context window that starts background compaction.
+    /// Defaults to 65; valid values are 1–100, including when disabled.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1, max = 100))]
+    pub model_async_compact_threshold_percent: Option<u8>,
+}
+
+impl FeatureConfig for AsyncCompactionConfigToml {
+    fn enabled(&self) -> Option<bool> {
+        self.enabled
+    }
+}

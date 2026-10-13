@@ -222,6 +222,7 @@ pub use windows_sandbox_config::windows_mxc_allowed_by_config;
 
 const DEFAULT_IGNORE_LARGE_UNTRACKED_DIRS: i64 = 200;
 const DEFAULT_IGNORE_LARGE_UNTRACKED_FILES: i64 = 10 * 1024 * 1024;
+const DEFAULT_ASYNC_COMPACTION_THRESHOLD_PERCENT: u8 = 65;
 
 /// Signals that a public config selected the retired `untrusted` approval policy.
 #[derive(Debug, thiserror::Error)]
@@ -659,6 +660,9 @@ pub struct Config {
     /// Percentage of the usable context window that triggers turn-end compaction.
     /// Zero disables turn-end compaction.
     pub model_post_turn_compact_threshold_percent: u8,
+
+    /// Percentage of the model's full context window at which background compaction starts.
+    pub async_compaction_threshold_percent: u8,
 
     /// Key into the model_providers map that specifies which provider to use.
     pub model_provider_id: String,
@@ -3303,6 +3307,19 @@ impl Config {
                 "model_post_turn_compact_threshold_percent must be between 0 and 100",
             ));
         }
+        let async_compaction_threshold_percent = cfg.features.as_ref()
+            .and_then(|features| features.async_compaction.as_ref())
+            .and_then(|feature| match feature {
+                FeatureToml::Enabled(_) => None,
+                FeatureToml::Config(config) => config.model_async_compact_threshold_percent,
+            })
+            .unwrap_or(DEFAULT_ASYNC_COMPACTION_THRESHOLD_PERCENT);
+        if !(1..=100).contains(&async_compaction_threshold_percent) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "model_async_compact_threshold_percent must be between 1 and 100",
+            ));
+        }
         if let Some(responses_api_metadata) = cfg.responses_api_metadata.as_ref() {
             validate_extra_metadata(responses_api_metadata.iter()).map_err(|message| {
                 std::io::Error::new(std::io::ErrorKind::InvalidInput, message)
@@ -4395,6 +4412,7 @@ impl Config {
             model_post_turn_compact_threshold_percent: cfg
                 .model_post_turn_compact_threshold_percent
                 .unwrap_or_default(),
+            async_compaction_threshold_percent,
             model_provider_id,
             model_provider,
             cwd: resolved_cwd,
