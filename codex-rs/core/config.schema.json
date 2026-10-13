@@ -1960,7 +1960,7 @@
               "$ref": "#/definitions/AsyncClassifierMode"
             }
           ],
-          "description": "Classifier experiment override. Otherwise use the model default, then snapshots."
+          "description": "Classifier mode override. Otherwise use the model default, then conversation."
         },
         "classifier_instructions": {
           "type": "string"
