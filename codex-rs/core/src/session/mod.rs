@@ -441,6 +441,32 @@ pub(crate) enum ForkPersistence {
     },
 }
 
+/// Normal appends keep this generation; compaction and rollback start a new one.
+#[derive(Clone, Copy)]
+pub(crate) struct CompactionPrefix {
+    pub(crate) len: usize,
+}
+
+pub(crate) enum CompactedHistoryInstallation<'a> {
+    Complete(CompactedHistoryMetadata),
+    #[allow(dead_code)]
+    Prefix {
+        prefix: CompactionPrefix,
+        prefix_context: Vec<ResponseItem>,
+        initial_context: Vec<ResponseItemEnvelope>,
+        model_info: &'a ModelInfo,
+        compaction_response_id: String,
+        reviewer_compaction_hash: Option<String>,
+        started_item: (&'a TurnContext, &'a TurnItem),
+    },
+}
+
+impl From<CompactedHistoryMetadata> for CompactedHistoryInstallation<'_> {
+    fn from(metadata: CompactedHistoryMetadata) -> Self {
+        Self::Complete(metadata)
+    }
+}
+
 pub(crate) struct SessionSpawnArgs {
     pub(crate) startup: Option<Arc<startup::SessionStartup>>,
     pub(crate) config: Config,
@@ -4122,16 +4148,18 @@ impl Session {
         state.replace_history(items, reference_context_item);
     }
 
-    pub(crate) async fn replace_compacted_history(
+    pub(crate) async fn replace_compacted_history<'a>(
         &self,
         mut items: Vec<ResponseItemEnvelope>,
         reference_context_item: TurnContextItem,
         world_state_baseline: WorldStateSnapshot,
-        metadata: CompactedHistoryMetadata,
+        installation: impl Into<CompactedHistoryInstallation<'a>>,
     ) {
-        for envelope in &mut items {
-            Self::assign_missing_response_item_id(&mut envelope.item);
-        }
+        let installation = installation.into();
+        let compaction_model_hash = match &installation {
+            CompactedHistoryInstallation::Complete(metadata) => &metadata.compaction_model_hash,
+            CompactedHistoryInstallation::Prefix { model_info, .. } => &model_info.comp_hash,
+        };
         let mcp_revision = self
             .services
             .executed_tool_calls
@@ -4151,14 +4179,63 @@ impl Session {
             checkpoint
                 .metadata
                 .get_or_insert_default()
-                .compaction_model_hash = metadata.compaction_model_hash;
+                .compaction_model_hash = compaction_model_hash.clone();
         }
         // Wait for accepted updates to finish persisting, then keep later updates from
         // overtaking the current settings snapshot while its checkpoint is written.
         let _settings_guard = thread_settings::acquire_persistence_lock(self).await;
         let world_state_item = WorldStateItem::full(world_state_baseline.clone().into_object());
-        let compacted_item = {
+        let (compacted_item, started_item) = {
             let mut state = self.state.lock().await;
+            let (metadata, started_item) = match installation {
+                CompactedHistoryInstallation::Complete(metadata) => (metadata, None),
+                CompactedHistoryInstallation::Prefix {
+                    prefix,
+                    prefix_context,
+                    initial_context,
+                    model_info,
+                    compaction_response_id,
+                    reviewer_compaction_hash,
+                    started_item: (turn_context, started_item),
+                } => {
+                    let current = state.history.annotated_items();
+                    let suffix = &current[prefix.len..];
+                    if suffix
+                        .iter()
+                        .any(|envelope| compact::is_real_user_or_agent_message(&envelope.item))
+                    {
+                        items.extend(initial_context);
+                    } else {
+                        items = compact::insert_initial_context_before_last_real_user_or_summary(
+                            items,
+                            initial_context,
+                        );
+                    }
+                    items.splice(
+                        0..0,
+                        prefix_context.into_iter().map(ResponseItemEnvelope::new),
+                    );
+                    items.extend_from_slice(suffix);
+                    let input_goal_ids =
+                        crate::context::UserGoalUpdate::message_ids(state.history.raw_items());
+                    let (window_number, window_ids) = state.advance_auto_compact_window();
+                    (
+                        CompactedHistoryMetadata {
+                            input_goal_ids,
+                            message: String::new(),
+                            window_number,
+                            window_ids,
+                            compaction_response_id: Some(compaction_response_id),
+                            compaction_model_hash: model_info.comp_hash.clone(),
+                            reviewer_compaction_hash,
+                        },
+                        Some((turn_context, started_item)),
+                    )
+                }
+            };
+            for envelope in &mut items {
+                Self::assign_missing_response_item_id(&mut envelope.item);
+            }
             // Goal edits are published outside the running task. Keep edits accepted after
             // the compaction input snapshot, in their original order, after its replacement.
             let replacement_goal_ids = crate::context::UserGoalUpdate::message_ids(
@@ -4188,7 +4265,7 @@ impl Session {
             );
             state.reasoning_effort_pin = ReasoningEffortPin::Compacted;
             state.history.set_world_state_baseline(world_state_baseline);
-            CompactedItem {
+            let compacted_item = CompactedItem {
                 message: metadata.message,
                 replacement_history: Some(replacement_history),
                 guardian_history: state.history.guardian_history_checkpoint(),
@@ -4209,9 +4286,14 @@ impl Session {
                     turn_attribution: state.turn_attribution.clone(),
                     previous_turn_settings: state.previous_turn_settings(),
                 }),
-            }
+            };
+            (compacted_item, started_item)
         };
 
+        if let Some((turn_context, item)) = started_item {
+            // The prefix is now known to be valid; announce the install before checkpoint I/O.
+            self.emit_turn_item_started(turn_context, item).await;
+        }
         let rollout_items = [
             RolloutItem::Compacted(compacted_item),
             RolloutItem::WorldState(world_state_item),
@@ -4314,7 +4396,8 @@ impl Session {
             .collect()
     }
 
-    /// `step_context` and `world_state` must come from the same captured step.
+    /// Normally both inputs come from the same step. Async compaction uses the prefix's
+    /// world state so later state updates can stay in history unchanged.
     /// Returns rendered items with placement preserved for the caller's history layout.
     pub(crate) async fn build_initial_context_with_world_state(
         &self,
@@ -4630,6 +4713,10 @@ impl Session {
 
     pub(crate) async fn current_window(&self) -> (String, u64, Uuid) {
         let state = self.state.lock().await;
+        self.current_window_from_state(&state)
+    }
+
+    pub(crate) fn current_window_from_state(&self, state: &SessionState) -> (String, u64, Uuid) {
         let thread_id = self.thread_id;
         let window_number = state.auto_compact_window_number();
         let context_window_id = state.auto_compact_window_ids().window_id;

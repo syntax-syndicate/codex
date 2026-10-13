@@ -60,6 +60,7 @@ use codex_rollout_trace::InferenceTraceContext;
 use codex_utils_output_truncation::approx_token_count;
 use codex_utils_output_truncation::truncate_text;
 use futures::StreamExt;
+use tokio_util::sync::CancellationToken;
 
 #[path = "compact_remote_v2_attempt.rs"]
 mod attempt;
@@ -80,6 +81,13 @@ const MAX_RETAINED_AGENT_MESSAGE_TOKENS: i64 = 10_000;
 // Compact attempts can run much longer than normal turns, so keep the per-transport
 // retry budget smaller than the general Responses stream retry budget.
 const MAX_REMOTE_COMPACTION_V2_STREAM_RETRIES: u64 = 2;
+
+#[derive(Clone, Copy)]
+enum CompactionRequestKind<'a> {
+    Foreground,
+    #[allow(dead_code)]
+    Background(&'a CancellationToken),
+}
 
 pub(crate) async fn run_inline_remote_auto_compact_task(
     sess: Arc<Session>,
@@ -410,7 +418,15 @@ async fn run_remote_compaction_request_v2(
             )
             .await
         {
-            Ok(stream) => collect_compaction_output(sess, turn_context, stream).await,
+            Ok(stream) => {
+                collect_compaction_output(
+                    sess,
+                    turn_context,
+                    stream,
+                    CompactionRequestKind::Foreground,
+                )
+                .await
+            }
             Err(err) => Err(err),
         };
 
@@ -436,13 +452,24 @@ async fn collect_compaction_output(
     sess: &Session,
     turn_context: &TurnContext,
     mut stream: ResponseStream,
+    request_kind: CompactionRequestKind<'_>,
 ) -> CodexResult<RemoteCompactionV2Output> {
     let mut output_item_count = 0usize;
     let mut compaction_count = 0usize;
     let mut compaction_output = None;
     let mut completed_response_id = None;
     let mut completed_token_usage = None;
-    while let Some(event) = stream.next().await {
+    loop {
+        let event = match request_kind {
+            CompactionRequestKind::Foreground => stream.next().await,
+            CompactionRequestKind::Background(cancellation) => tokio::select! {
+                biased;
+                // Charge completed usage even when cancellation arrives at the same time.
+                event = stream.next() => event,
+                _ = cancellation.cancelled() => return Err(CodexErr::TurnAborted),
+            },
+        };
+        let Some(event) = event else { break };
         match event? {
             ResponseEvent::OutputItemDone(item) => {
                 output_item_count += 1;
@@ -459,13 +486,22 @@ async fn collect_compaction_output(
                 usage_metadata,
                 ..
             } => {
-                sess.record_observed_response_completed(
-                    turn_context,
-                    &response_id,
-                    token_usage.as_ref(),
-                    usage_metadata.as_ref(),
-                )
-                .await;
+                match request_kind {
+                    CompactionRequestKind::Background(_) => {
+                        if let Some(usage) = token_usage.as_ref() {
+                            sess.record_rollout_budget_usage(usage).await?;
+                        }
+                    }
+                    CompactionRequestKind::Foreground => {
+                        sess.record_observed_response_completed(
+                            turn_context,
+                            &response_id,
+                            token_usage.as_ref(),
+                            usage_metadata.as_ref(),
+                        )
+                        .await;
+                    }
+                }
                 completed_response_id = Some(response_id);
                 completed_token_usage = token_usage;
                 break;
@@ -1294,9 +1330,14 @@ mod tests {
 
         let (sess, turn_context, rx) =
             crate::session::tests::make_session_and_context_with_rx().await;
-        let output = collect_compaction_output(&sess, &turn_context, stream)
-            .await
-            .expect("compaction should be collected");
+        let output = collect_compaction_output(
+            &sess,
+            &turn_context,
+            stream,
+            CompactionRequestKind::Foreground,
+        )
+        .await
+        .expect("compaction should be collected");
 
         assert_eq!(output.compaction_output, compaction);
         assert_eq!(output.response_id, "resp-compact");
