@@ -166,7 +166,9 @@ impl App {
                     && self.daemon_restart.is_none()
                 {
                     self.daemon_restart = Some(tokio::spawn(codex_app_server_daemon::run(
-                        codex_app_server_daemon::LifecycleCommand::Restart,
+                        codex_app_server_daemon::LifecycleCommand::Restart {
+                            feature_overrides: Default::default(),
+                        },
                     )));
                 }
             }
