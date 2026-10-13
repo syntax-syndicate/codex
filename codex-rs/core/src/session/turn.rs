@@ -2669,9 +2669,8 @@ async fn try_run_sampling_request(
             .or_cancel(&preempt)
             .or_cancel(&cancellation_token)
             .await;
-        if cancellation_token.is_cancelled() {
-            break Err(CodexErr::TurnAborted);
-        }
+        // Account for an already-received terminal error even if cancellation raced it.
+        // Cancellation still stops ordinary stream events before they can run tools.
         let event = match event {
             Ok(Ok(event)) => event,
             Ok(Err(_)) => {
@@ -2694,9 +2693,27 @@ async fn try_run_sampling_request(
             Err(_) => break Err(CodexErr::TurnAborted),
         };
 
+        if cancellation_token.is_cancelled()
+            && !matches!(event.as_ref(), Some(Err(err))
+                if matches!(err.details(), CodexErrorDetails::ResponseIncomplete(_)))
+        {
+            break Err(CodexErr::TurnAborted);
+        }
+
         let event = match event {
             Some(Ok(event)) => event,
-            Some(Err(err)) => break Err(err),
+            Some(Err(err)) => {
+                if let CodexErrorDetails::ResponseIncomplete(incomplete) = err.details() {
+                    sess.record_incomplete_response_usage(
+                        &turn_context,
+                        &step_context.settings,
+                        incomplete,
+                    )
+                    .await;
+                    should_emit_token_count |= incomplete.token_usage.is_some();
+                }
+                break Err(err);
+            }
             None => {
                 break Err(CodexErr::Stream(
                     "stream closed before response.completed".into(),
@@ -3020,6 +3037,7 @@ async fn try_run_sampling_request(
                         &turn_context,
                         &step_context.settings,
                         token_usage.as_ref(),
+                        super::TokenUsageContext::Sampling,
                     )
                     .await;
                 should_emit_token_count = true;

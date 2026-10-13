@@ -233,6 +233,7 @@ use codex_model_provider::create_model_provider;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::CodexErrorDetails;
+use codex_protocol::error::ResponseIncompleteError;
 use codex_protocol::error::Result as CodexResult;
 #[cfg(test)]
 use codex_protocol::exec_output::StreamOutput;
@@ -407,6 +408,13 @@ use codex_tools::ToolName;
 use codex_utils_absolute_path::AbsolutePathBuf;
 #[cfg(test)]
 use codex_utils_stream_parser::ProposedPlanSegment;
+
+/// Whether reported usage updates the installed context baseline or only spending.
+#[derive(Clone, Copy)]
+pub(crate) enum TokenUsageContext {
+    Sampling,
+    SpendingOnly,
+}
 
 /// Queue and lifecycle endpoints for a running [`Session`].
 ///
@@ -4938,13 +4946,44 @@ impl Session {
         Ok(Arc::new(world_state))
     }
 
+    /// Record reported spending without changing the context baseline or estimating usage.
+    pub(crate) async fn record_incomplete_response_usage(
+        &self,
+        turn_context: &TurnContext,
+        settings: &ResolvedStepSettings,
+        incomplete: &ResponseIncompleteError,
+    ) {
+        if let Some(response_id) = &incomplete.response_id {
+            self.record_response_token_usage(
+                turn_context,
+                response_id,
+                incomplete.token_usage.as_ref(),
+            )
+            .await;
+        }
+        // Accounting may exhaust the budget; keep the original incomplete-response reason.
+        let _ = self
+            .record_token_usage_info(
+                turn_context,
+                settings,
+                incomplete.token_usage.as_ref(),
+                TokenUsageContext::SpendingOnly,
+            )
+            .await;
+    }
+
     pub(crate) async fn update_token_usage_info(
         &self,
         turn_context: &TurnContext,
         token_usage: Option<&TokenUsage>,
     ) -> CodexResult<()> {
         let result = self
-            .record_token_usage_info(turn_context, &turn_context.initial_settings, token_usage)
+            .record_token_usage_info(
+                turn_context,
+                &turn_context.initial_settings,
+                token_usage,
+                TokenUsageContext::Sampling,
+            )
             .await;
         self.send_token_count_event(turn_context).await;
         result
@@ -4966,6 +5005,16 @@ impl Session {
             }),
         )
         .await;
+        self.record_response_token_usage(turn_context, response_id, usage)
+            .await;
+    }
+
+    pub(crate) async fn record_response_token_usage(
+        &self,
+        turn_context: &TurnContext,
+        response_id: &str,
+        usage: Option<&TokenUsage>,
+    ) {
         let Some(usage) = usage else {
             return;
         };
@@ -4989,19 +5038,42 @@ impl Session {
         turn_context: &TurnContext,
         settings: &ResolvedStepSettings,
         token_usage: Option<&TokenUsage>,
+        context: TokenUsageContext,
     ) -> CodexResult<()> {
         if let Some(token_usage) = token_usage {
             let token_info = {
                 let mut state = self.state.lock().await;
-                state
-                    .update_token_info_from_usage(token_usage, turn_context.model_context_window());
-                if matches!(
-                    turn_context.config.model_auto_compact_token_limit_scope,
-                    AutoCompactTokenLimitScope::BodyAfterPrefix
-                ) {
-                    state.ensure_auto_compact_window_server_prefill_from_usage(token_usage);
+                match context {
+                    TokenUsageContext::Sampling => {
+                        state.update_token_info_from_usage(
+                            token_usage,
+                            turn_context.model_context_window(),
+                        );
+                        if matches!(
+                            turn_context.config.model_auto_compact_token_limit_scope,
+                            AutoCompactTokenLimitScope::BodyAfterPrefix
+                        ) {
+                            state.ensure_auto_compact_window_server_prefill_from_usage(token_usage);
+                        }
+                        state.token_info()
+                    }
+                    TokenUsageContext::SpendingOnly => {
+                        let mut info = state.token_info().unwrap_or(TokenUsageInfo {
+                            total_token_usage: TokenUsage::default(),
+                            last_token_usage: TokenUsage::default(),
+                            model_context_window: turn_context.model_context_window(),
+                        });
+                        info.total_token_usage.add_assign(token_usage);
+                        state.set_token_info(Some(info.clone()));
+
+                        // Contributors receive the reported usage; stored context stays unchanged.
+                        info.last_token_usage = token_usage.clone();
+                        info.model_context_window = turn_context
+                            .model_context_window()
+                            .or(info.model_context_window);
+                        Some(info)
+                    }
                 }
-                state.token_info()
             };
             let turn_state = self
                 .input_queue

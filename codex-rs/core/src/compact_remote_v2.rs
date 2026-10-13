@@ -394,6 +394,27 @@ async fn collect_compaction_output(
             },
         };
         let Some(event) = event else { break };
+        if let Err(err) = &event
+            && let CodexErrorDetails::ResponseIncomplete(incomplete) = err.details()
+        {
+            match request_kind {
+                CompactionRequestKind::Background(_) => {
+                    if let Some(usage) = incomplete.token_usage.as_ref() {
+                        // Match completed background requests without replacing the terminal error.
+                        let _ = sess.record_rollout_budget_usage(usage).await;
+                    }
+                }
+                CompactionRequestKind::Foreground => {
+                    sess.record_incomplete_response_usage(
+                        turn_context,
+                        &turn_context.initial_settings,
+                        incomplete,
+                    )
+                    .await;
+                    sess.send_token_count_event(turn_context).await;
+                }
+            }
+        }
         match event? {
             ResponseEvent::OutputItemDone(item) => {
                 output_item_count += 1;
@@ -1217,6 +1238,41 @@ mod tests {
         let truncated = truncate_without_metadata(retained, /*max_tokens*/ 1);
 
         assert_eq!(truncated, vec![newest]);
+    }
+
+    #[tokio::test]
+    async fn collect_background_incomplete_does_not_publish_foreground_usage() {
+        let stream = response_stream(vec![Err(CodexErr::new(
+            CodexErrorDetails::ResponseIncomplete(Box::new(
+                codex_protocol::error::ResponseIncompleteError {
+                    reason: "max_output_tokens".to_string(),
+                    response_id: Some("resp-background".to_string()),
+                    token_usage: Some(TokenUsage {
+                        input_tokens: 100,
+                        output_tokens: 20,
+                        total_tokens: 120,
+                        ..Default::default()
+                    }),
+                },
+            )),
+        ))]);
+        let (sess, turn_context, rx) =
+            crate::session::tests::make_session_and_context_with_rx().await;
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+
+        let result = collect_compaction_output(
+            &sess,
+            &turn_context,
+            stream,
+            CompactionRequestKind::Background(&cancellation),
+        )
+        .await;
+
+        assert!(matches!(result, Err(ref err)
+            if matches!(err.details(), CodexErrorDetails::ResponseIncomplete(_))));
+        assert_eq!(sess.token_usage_info().await, None);
+        assert!(rx.is_empty());
     }
 
     #[tokio::test]
