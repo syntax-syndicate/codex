@@ -12031,6 +12031,8 @@ async fn remote_compaction_v2_retains_only_the_selected_step(first_attempt: Firs
         ),
         CompactionReason::ModelDownshift,
         CompactionPhase::PreTurn,
+        /*candidate*/ None,
+        crate::compact_remote_v2::CompactionFallback::Foreground,
     )
     .await
     .expect("compaction succeeds");

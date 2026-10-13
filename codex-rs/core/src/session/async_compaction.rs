@@ -1,4 +1,4 @@
-//! Holds the latest speculative request in memory until the foreground can use it.
+//! Holds the current speculative request, polled at checkpoints or awaited when compaction is due.
 //! Discarded requests still charge completed usage; session shutdown cancels remaining network work.
 
 use std::sync::Arc;
@@ -135,6 +135,44 @@ pub(super) async fn maybe_start(
         .async_compaction
         .tasks
         .spawn(storage_originator.scope(task));
+}
+
+pub(super) async fn take_ready(
+    sess: &Session,
+    turn_context: &TurnContext,
+) -> Option<BackgroundCompactionCandidate> {
+    if !enabled(turn_context) {
+        return None;
+    }
+    let mut state = sess.state.lock().await;
+    let candidate = state.async_compaction.result.as_mut()?.try_recv().ok()?;
+    state.async_compaction.result = None;
+    (candidate.prefix.generation == state.history.history_version()).then_some(candidate)
+}
+
+pub(crate) async fn wait_for_pending(
+    sess: &Session,
+    step_context: &StepContext,
+) -> Option<BackgroundCompactionCandidate> {
+    if !enabled(&step_context.turn) {
+        return None;
+    }
+    let result = {
+        let mut state = sess.state.lock().await;
+        let result = state.async_compaction.result.take()?;
+        let model = &step_context.settings.model_info;
+        let attempt = state.async_compaction.last_attempt.as_ref()?;
+        if attempt.history_version != state.history.history_version()
+            || attempt.model_slug != model.slug
+            || attempt.compaction_hash != model.comp_hash
+            || attempt.auth_owner_generation != sess.services.model_client.auth_owner_generation()
+        {
+            return None;
+        }
+        result
+    };
+    // Release session state while the request finishes and charges its usage.
+    result.await.ok()
 }
 
 pub(crate) async fn shutdown_cancellation(sess: &Session) -> CancellationToken {

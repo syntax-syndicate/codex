@@ -446,13 +446,13 @@ pub(crate) enum ForkPersistence {
 /// Normal appends keep this generation; compaction and rollback start a new one.
 #[derive(Clone, Copy)]
 pub(crate) struct CompactionPrefix {
+    pub(crate) generation: u64,
     pub(crate) len: usize,
     pub(crate) auth_owner_generation: Option<u64>,
 }
 
 pub(crate) enum CompactedHistoryInstallation<'a> {
     Complete(CompactedHistoryMetadata),
-    #[allow(dead_code)]
     Prefix {
         prefix: CompactionPrefix,
         prefix_context: Vec<ResponseItem>,
@@ -460,7 +460,8 @@ pub(crate) enum CompactedHistoryInstallation<'a> {
         model_info: &'a ModelInfo,
         compaction_response_id: String,
         reviewer_compaction_hash: Option<String>,
-        started_item: (&'a TurnContext, &'a TurnItem),
+        turn_context: &'a TurnContext,
+        started_item: Option<&'a TurnItem>,
     },
 }
 
@@ -4155,9 +4156,9 @@ impl Session {
         &self,
         mut items: Vec<ResponseItemEnvelope>,
         reference_context_item: TurnContextItem,
-        world_state_baseline: WorldStateSnapshot,
+        mut world_state_baseline: WorldStateSnapshot,
         installation: impl Into<CompactedHistoryInstallation<'a>>,
-    ) {
+    ) -> bool {
         let installation = installation.into();
         let compaction_model_hash = match &installation {
             CompactedHistoryInstallation::Complete(metadata) => &metadata.compaction_model_hash,
@@ -4187,9 +4188,10 @@ impl Session {
         // Wait for accepted updates to finish persisting, then keep later updates from
         // overtaking the current settings snapshot while its checkpoint is written.
         let _settings_guard = thread_settings::acquire_persistence_lock(self).await;
-        let world_state_item = WorldStateItem::full(world_state_baseline.clone().into_object());
         let (compacted_item, started_item) = {
             let mut state = self.state.lock().await;
+            let complete_replacement =
+                matches!(&installation, CompactedHistoryInstallation::Complete(_));
             let (metadata, started_item) = match installation {
                 CompactedHistoryInstallation::Complete(metadata) => (metadata, None),
                 CompactedHistoryInstallation::Prefix {
@@ -4199,14 +4201,23 @@ impl Session {
                     model_info,
                     compaction_response_id,
                     reviewer_compaction_hash,
-                    started_item: (turn_context, started_item),
+                    turn_context,
+                    started_item,
                 } => {
+                    // Validate immediately before slicing and replacing the captured prefix.
+                    if state.history.history_version() != prefix.generation
+                        || state.history.annotated_items().len() < prefix.len
+                        || self.services.model_client.auth_owner_generation()
+                            != prefix.auth_owner_generation
+                    {
+                        return false;
+                    }
                     let current = state.history.annotated_items();
                     let suffix = &current[prefix.len..];
-                    if suffix
-                        .iter()
-                        .any(|envelope| compact::is_real_user_or_agent_message(&envelope.item))
-                    {
+                    if suffix.iter().any(|envelope| {
+                        crate::compact_retained_tool_outputs::is_retained_tool_output(envelope)
+                            || compact::is_real_user_or_agent_message(&envelope.item)
+                    }) {
                         items.extend(initial_context);
                     } else {
                         items = compact::insert_initial_context_before_last_real_user_or_summary(
@@ -4219,8 +4230,12 @@ impl Session {
                         prefix_context.into_iter().map(ResponseItemEnvelope::new),
                     );
                     items.extend_from_slice(suffix);
-                    let input_goal_ids =
-                        crate::context::UserGoalUpdate::message_ids(state.history.raw_items());
+                    // The unchanged suffix already contains updates through this baseline.
+                    if let Some(checkpoint) = state.history.world_state_checkpoint() {
+                        world_state_baseline = WorldStateSnapshot::from(&checkpoint.state);
+                    }
+                    // Prefix replacement already retains all edits in the live suffix.
+                    let input_goal_ids = Default::default();
                     let (window_number, window_ids) = state.advance_auto_compact_window();
                     (
                         CompactedHistoryMetadata {
@@ -4232,7 +4247,7 @@ impl Session {
                             compaction_model_hash: model_info.comp_hash.clone(),
                             reviewer_compaction_hash,
                         },
-                        Some((turn_context, started_item)),
+                        started_item.map(|item| (turn_context, item)),
                     )
                 }
             };
@@ -4241,23 +4256,25 @@ impl Session {
             }
             // Goal edits are published outside the running task. Keep edits accepted after
             // the compaction input snapshot, in their original order, after its replacement.
-            let replacement_goal_ids = crate::context::UserGoalUpdate::message_ids(
-                items.iter().map(|envelope| &envelope.item),
-            );
-            items.extend(
-                state
-                    .history
-                    .annotated_items()
-                    .iter()
-                    .filter(|envelope| {
-                        crate::context::UserGoalUpdate::message_text(&envelope.item).is_some()
-                            && envelope.item.id().is_some_and(|id| {
-                                !metadata.input_goal_ids.contains(id)
-                                    && !replacement_goal_ids.contains(id)
-                            })
-                    })
-                    .cloned(),
-            );
+            if complete_replacement {
+                let replacement_goal_ids = crate::context::UserGoalUpdate::message_ids(
+                    items.iter().map(|envelope| &envelope.item),
+                );
+                items.extend(
+                    state
+                        .history
+                        .annotated_items()
+                        .iter()
+                        .filter(|envelope| {
+                            crate::context::UserGoalUpdate::message_text(&envelope.item).is_some()
+                                && envelope.item.id().is_some_and(|id| {
+                                    !metadata.input_goal_ids.contains(id)
+                                        && !replacement_goal_ids.contains(id)
+                                })
+                        })
+                        .cloned(),
+                );
+            }
             let replacement_history = items.clone();
             state.replace_annotated_history(
                 items,
@@ -4267,7 +4284,9 @@ impl Session {
                 },
             );
             state.reasoning_effort_pin = ReasoningEffortPin::Compacted;
-            state.history.set_world_state_baseline(world_state_baseline);
+            state
+                .history
+                .set_world_state_baseline(world_state_baseline.clone());
             let compacted_item = CompactedItem {
                 message: metadata.message,
                 replacement_history: Some(replacement_history),
@@ -4297,6 +4316,7 @@ impl Session {
             // The prefix is now known to be valid; announce the install before checkpoint I/O.
             self.emit_turn_item_started(turn_context, item).await;
         }
+        let world_state_item = WorldStateItem::full(world_state_baseline.into_object());
         let rollout_items = [
             RolloutItem::Compacted(compacted_item),
             RolloutItem::WorldState(world_state_item),
@@ -4315,6 +4335,7 @@ impl Session {
             let mut state = self.state.lock().await;
             state.queue_pending_session_start_source(codex_hooks::SessionStartSource::Compact);
         }
+        true
     }
 
     pub fn enabled(&self, feature: Feature) -> bool {

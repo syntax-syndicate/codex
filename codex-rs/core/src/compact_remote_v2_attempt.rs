@@ -48,9 +48,8 @@ pub(super) enum RemoteCompactV2AttemptInput<'a> {
     Background(BackgroundCompactionInput),
 }
 
-#[allow(dead_code)]
 pub(crate) struct BackgroundCompactionCandidate {
-    pub(super) prefix: CompactionPrefix,
+    pub(crate) prefix: CompactionPrefix,
     pub(super) model_info: Arc<ModelInfo>,
     pub(super) cutoff_world_state: Arc<WorldState>,
     pub(super) attempt: RemoteCompactV2Attempt,
@@ -255,6 +254,7 @@ pub(crate) fn capture_background_input(
         base_instructions
     };
     let prefix = CompactionPrefix {
+        generation: snapshot.history_version(),
         len: snapshot.annotated_items().len(),
         auth_owner_generation,
     };
