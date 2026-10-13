@@ -6,6 +6,7 @@ use std::sync::atomic::Ordering;
 use crate::client::ModelClientSession;
 use crate::client_common::Prompt;
 use crate::client_common::ResponseEvent;
+use crate::compact::AutoCompactionDisabled;
 use crate::compact::run_inline_auto_compact_task;
 use crate::compact_remote_v2::BackgroundCompactionCandidate;
 use crate::compact_remote_v2::run_inline_remote_auto_compact_task as run_inline_remote_auto_compact_task_v2;
@@ -170,6 +171,13 @@ pub(crate) async fn run_turn(
     prewarmed_client_session: Option<ModelClientSession>,
     cancellation_token: CancellationToken,
 ) -> CodexResult<Option<String>> {
+    let auto_compaction_enabled = sess
+        .services
+        .thread_extension_data
+        .get::<AutoCompactionDisabled>()
+        .is_none();
+    let auto_summarization_enabled =
+        auto_compaction_enabled && !turn_context.config.features.enabled(Feature::TokenBudget);
     if crate::guardian::is_basic_session_source(&turn_context.session_source) {
         crate::guardian::check_pending_guardian_input(&sess, &turn_context).await?;
     }
@@ -182,13 +190,14 @@ pub(crate) async fn run_turn(
     // new user message are recorded. Estimate pending incoming items (context
     // diffs/full reinjection + user input) and trigger compaction preemptively
     // when they would push the thread over the compaction threshold.
-    if let Err(err) = run_pre_sampling_compact(
-        &sess,
-        &turn_context,
-        &mut client_session,
-        &cancellation_token,
-    )
-    .await
+    if auto_compaction_enabled
+        && let Err(err) = run_pre_sampling_compact(
+            &sess,
+            &turn_context,
+            &mut client_session,
+            &cancellation_token,
+        )
+        .await
     {
         // Compaction runs before the new input is recorded, so preserve it on every failure.
         run_hooks_and_record_inputs(
@@ -335,8 +344,8 @@ pub(crate) async fn run_turn(
     {
         // Token-budget compaction resets history, which can discard the evidence
         // referenced by a pending delta review. Leave budget failures unreusable.
-        if !matches!(error.details(), CodexErrorDetails::ContextWindowExceeded)
-            || turn_context.config.features.enabled(Feature::TokenBudget)
+        if !auto_summarization_enabled
+            || !matches!(error.details(), CodexErrorDetails::ContextWindowExceeded)
         {
             return Err(error);
         }
@@ -608,16 +617,19 @@ pub(crate) async fn run_turn(
                     );
                 }
 
-                let should_roll_over = needs_follow_up
+                let should_roll_over = auto_compaction_enabled
+                    && needs_follow_up
                     && (sess.take_new_context_window_request().await || token_limit_reached);
-                let allow_auto_compact_fallback = !should_roll_over && !token_limit_reached;
-                super::token_budget::maybe_record(
-                    sess.as_ref(),
-                    turn_context.as_ref(),
-                    token_status.base_window_tokens_remaining,
-                    allow_auto_compact_fallback,
-                )
-                .await;
+                if auto_compaction_enabled {
+                    let allow_auto_compact_fallback = !should_roll_over && !token_limit_reached;
+                    super::token_budget::maybe_record(
+                        sess.as_ref(),
+                        turn_context.as_ref(),
+                        token_status.base_window_tokens_remaining,
+                        allow_auto_compact_fallback,
+                    )
+                    .await;
+                }
 
                 // as long as compaction works well in getting us way below the token limit, we shouldn't worry about being in an infinite loop.
                 if should_roll_over {
@@ -720,8 +732,8 @@ pub(crate) async fn run_turn(
                     // Token-budget resets do not summarize, so preserve their existing rollover
                     // policy. Keep summarizing compaction in this task to serialize history updates.
                     let config = &turn_context.config;
-                    if config.model_post_turn_compact_threshold_percent > 0
-                        && !config.features.enabled(Feature::TokenBudget)
+                    let should_compact_after_turn = auto_summarization_enabled
+                        && config.model_post_turn_compact_threshold_percent > 0
                         && super::context_window::context_window_token_status(
                             sess.as_ref(),
                             turn_context.as_ref(),
@@ -729,7 +741,8 @@ pub(crate) async fn run_turn(
                         .await
                         .turn_end_compaction_threshold_reached
                         && !sess.input_queue.has_pending_input(&sess.active_turn).await
-                        && !cancellation_token.is_cancelled()
+                        && !cancellation_token.is_cancelled();
+                    if should_compact_after_turn
                         && let Err(err) = run_auto_compact(
                             &sess,
                             Arc::clone(&step_context),
@@ -764,9 +777,9 @@ pub(crate) async fn run_turn(
                 continue;
             }
             Err(err)
-                if matches!(err.details(), CodexErrorDetails::ContextWindowExceeded)
+                if auto_summarization_enabled
+                    && matches!(err.details(), CodexErrorDetails::ContextWindowExceeded)
                     && !guardian_budget_compacted
-                    && !turn_context.config.features.enabled(Feature::TokenBudget)
                     && sess
                         .services
                         .thread_extension_data
