@@ -281,6 +281,7 @@ pub(in crate::async_scorer) fn sample_request(parent_turn_id: &str) -> LunaSampl
         reasoning_effort: ReasoningEffort::None,
         parent_turn_id: parent_turn_id.to_owned(),
         root_turn_id: None,
+        pending_score: None,
     }
 }
 
@@ -649,6 +650,7 @@ async fn preconnected_sampler_reuses_authenticated_websocket_for_classifications
             reasoning_effort: ReasoningEffort::None,
             parent_turn_id: "turn-1".to_owned(),
             root_turn_id: Some("turn-1".to_owned()),
+            pending_score: None,
         })
         .await?;
     tokio::time::timeout(Duration::from_secs(2), async {
@@ -682,6 +684,7 @@ async fn preconnected_sampler_reuses_authenticated_websocket_for_classifications
             reasoning_effort: ReasoningEffort::Medium,
             parent_turn_id: "turn-2".to_owned(),
             root_turn_id: Some("root-2".to_owned()),
+            pending_score: None,
         })
         .await?;
 
@@ -877,6 +880,7 @@ async fn sampler_returns_classification_token_before_terminal_response_events() 
             reasoning_effort: ReasoningEffort::None,
             parent_turn_id: "turn-1".to_owned(),
             root_turn_id: Some("turn-1".to_owned()),
+            pending_score: None,
         }),
     )
     .await??;
