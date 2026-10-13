@@ -203,6 +203,8 @@ async fn daybreak_command_persists_and_confirms_each_selection() -> Result<()> {
     app.chat_widget
         .set_feature_enabled(Feature::CliDaybreak, /*enabled*/ true);
     app.chat_widget.set_daybreak_enabled(/*enabled*/ true);
+    app.chat_widget
+        .set_feature_enabled(Feature::ApiKeyCyberAccessPrograms, /*enabled*/ false);
     let models = app.chat_widget.model_catalog().models.clone();
     app.chat_widget.update_account_state(
         Some(crate::status::StatusAccountDisplay::ApiKey),
@@ -1899,10 +1901,6 @@ async fn check_dynamic_tool_requests(
     app.config
         .features
         .set_enabled(Feature::CliDaybreak, rollout_enabled)?;
-    app.config.features.set_enabled(
-        Feature::ApiKeyCyberAccessPrograms,
-        api_key_cyber_access_programs,
-    )?;
     let codex_home = tempdir()?;
     let backend = wiremock::MockServer::start().await;
     let backend_url = format!("{}/backend-api", backend.uri());
@@ -1919,10 +1917,11 @@ async fn check_dynamic_tool_requests(
     }
     let catalog_path = codex_home.path().join("models.json");
     std::fs::write(&catalog_path, serde_json::to_vec(&catalog)?)?;
+    // The server's target-thread config may differ from the launching TUI's defaults.
     std::fs::write(
         codex_home.path().join("config.toml"),
         format!(
-            "daybreak = true\nmodel_catalog_json = {:?}\nchatgpt_base_url = {backend_url:?}\ncli_auth_credentials_store = \"file\"\nopenai_base_url = {api_url:?}\n",
+            "daybreak = true\nmodel_catalog_json = {:?}\nchatgpt_base_url = {backend_url:?}\ncli_auth_credentials_store = \"file\"\nopenai_base_url = {api_url:?}\nfeatures.cli_daybreak = {rollout_enabled}\nfeatures.api_key_cyber_access_programs = {api_key_cyber_access_programs}\n",
             catalog_path.display().to_string()
         ),
     )?;

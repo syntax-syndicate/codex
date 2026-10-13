@@ -1418,7 +1418,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         id: Feature::ApiKeyCyberAccessPrograms,
         key: "api_key_cyber_access_programs",
         stage: Stage::Stable,
-        default_enabled: false,
+        default_enabled: true,
     },
     FeatureSpec {
         id: Feature::EnableRequestCompression,

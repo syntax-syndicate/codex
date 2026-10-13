@@ -566,6 +566,7 @@ async fn execute_inner(
             let cyber_access_program = background_turn_program(
                 &features,
                 &handle,
+                &thread_id,
                 &started.model,
                 &started.model_provider,
                 daybreak_enabled,
@@ -717,6 +718,7 @@ async fn execute_inner(
             let cyber_access_program = background_turn_program(
                 &features,
                 &handle,
+                &arguments.thread_id,
                 arguments.model.as_deref().unwrap_or(&resumed.model),
                 &resumed.model_provider,
                 daybreak_enabled,
@@ -1262,6 +1264,7 @@ async fn start_turn(
 async fn background_turn_program(
     features: &Features,
     handle: &AppServerRequestHandle,
+    thread_id: &str,
     model: &str,
     provider: &str,
     enabled: bool,
@@ -1294,12 +1297,30 @@ async fn background_turn_program(
         }
         Err(_) => None,
     };
-    let has_chatgpt_account = matches!(account, Some(Account::Chatgpt { .. }));
     let eligible = provider == "openai"
-        && (has_chatgpt_account
-            || enabled
-                && matches!(account, Some(Account::ApiKey { .. }))
-                && features.enabled(Feature::ApiKeyCyberAccessPrograms));
+        && match account {
+            Some(Account::Chatgpt { .. }) => true,
+            Some(Account::ApiKey { .. }) => {
+                // Only the target thread can establish its forwarding policy, including
+                // project opt-outs. Older servers that cannot report it keep omission.
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                crate::experimental_features::fetch(
+                    handle.clone(),
+                    Some(ThreadId::from_string(thread_id).map_err(|error| error.to_string())?),
+                    format!("tui-dynamic-{}", Uuid::new_v4()),
+                    tx,
+                );
+                if !rx.await.ok().and_then(Result::ok).is_some_and(|features| {
+                    features.into_iter().any(|feature| {
+                        feature.name == Feature::ApiKeyCyberAccessPrograms.key() && feature.enabled
+                    })
+                }) {
+                    return Ok(None);
+                }
+                true
+            }
+            Some(Account::AmazonBedrock { .. }) | None => false,
+        };
     // Retain saved metadata while suppressing it for accounts that cannot use Daybreak.
     let enabled = enabled && eligible;
     let models = models
