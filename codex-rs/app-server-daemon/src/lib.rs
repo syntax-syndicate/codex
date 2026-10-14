@@ -16,6 +16,7 @@ pub use launch::restart_with_features;
 pub use launch::start_with_features;
 mod managed_install;
 mod prepare_install;
+mod release_pruning;
 pub use prepare_install::InstallRequest;
 pub use prepare_install::update_from_cli;
 mod remote_control_client;
@@ -521,6 +522,7 @@ impl Daemon {
         &self,
         mode: RestartMode,
         managed_codex_bin: &Path,
+        package_root: &Path,
     ) -> Result<RestartIfRunningOutcome> {
         let operation_lock = self.open_operation_lock_file().await?;
         if !try_lock_file(&operation_lock)? {
@@ -615,6 +617,20 @@ impl Daemon {
                 != Some(managed_codex_bin)
         {
             return Ok(RestartIfRunningOutcome::AlreadyCurrent);
+        }
+        // All exits for busy, not-ready or superseded selections precede cleanup.
+        // Keep the operation lock, and recheck readiness's selection under both locks.
+        if package_root.ends_with("app-server-daemon")
+            && let Ok(_install_lock) = install_lock::acquire_install_lock(package_root).await
+            && let Ok(current_bin) = self.current_managed_codex_bin()
+            && managed_install::resolved_managed_codex_bin(&current_bin)
+                .await
+                .ok()
+                .as_deref()
+                == Some(managed_codex_bin)
+            && let Err(error) = release_pruning::prune(self, package_root, &settings).await
+        {
+            tracing::debug!(%error, "skipped daemon release pruning");
         }
         Ok(outcome)
     }
