@@ -16,6 +16,7 @@ use crate::session::session::Session;
 use crate::session::step_context::StepContext;
 use crate::session::turn_context::TurnContext;
 use crate::tools::ApprovalContext;
+use crate::tools::ApprovalResolutionSource;
 use crate::tools::context::ToolCallOrigin;
 use crate::tools::hook_names::HookToolName;
 use crate::tools::lifecycle::process_mcp_tool_result;
@@ -275,7 +276,7 @@ pub(crate) async fn handle_mcp_tool_call(
     } else {
         McpToolApprovalPolicy::for_server(approval_mode)
     };
-    if let Some(decision) = maybe_request_mcp_tool_approval(
+    if let Some(approval) = maybe_request_mcp_tool_approval(
         &sess,
         step_context,
         cancellation_token,
@@ -290,7 +291,9 @@ pub(crate) async fn handle_mcp_tool_call(
     )
     .await
     {
-        let result = match decision {
+        let cancellation_outcome = matches!(approval.decision, ReviewDecision::Abort)
+            .then(|| McpCallMetricOutcome::approval_cancelled(approval.source));
+        let result = match approval.decision {
             decision @ (ReviewDecision::Approved
             | ReviewDecision::ApprovedForSession
             | ReviewDecision::ApprovedMcpPolicyAmendment
@@ -356,7 +359,8 @@ pub(crate) async fn handle_mcp_tool_call(
         };
 
         let status = if result.is_ok() { "ok" } else { "error" };
-        let outcome = McpCallMetricOutcome::from_status(status);
+        let outcome =
+            cancellation_outcome.unwrap_or_else(|| McpCallMetricOutcome::from_status(status));
         emit_mcp_call_metrics(
             &step_context.session_telemetry,
             &outcome,
@@ -1467,6 +1471,12 @@ fn mcp_tool_approval_prompt_options(
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct McpToolApproval {
+    decision: ReviewDecision,
+    source: Option<ApprovalResolutionSource>,
+}
+
 #[expect(clippy::too_many_arguments)]
 async fn maybe_request_mcp_tool_approval(
     sess: &Arc<Session>,
@@ -1480,7 +1490,7 @@ async fn maybe_request_mcp_tool_approval(
     config: &codex_mcp::McpConfig,
     permission_profile: &PermissionProfile,
     policy: McpToolApprovalPolicy,
-) -> Option<ReviewDecision> {
+) -> Option<McpToolApproval> {
     let turn_context = &step_context.turn;
     let strict_auto_review = turn_context.strict_auto_review_enabled();
     let approvals_reviewer = connectors::mcp_approvals_reviewer_from_layers(
@@ -1522,7 +1532,10 @@ async fn maybe_request_mcp_tool_approval(
         && let Some(key) = session_approval_key.as_ref()
         && mcp_tool_approval_is_remembered(sess, key).await
     {
-        return Some(ReviewDecision::Approved);
+        return Some(McpToolApproval {
+            decision: ReviewDecision::Approved,
+            source: None,
+        });
     }
 
     let action = ApprovalAction::McpToolCall {
@@ -1563,13 +1576,15 @@ async fn maybe_request_mcp_tool_approval(
         retry_reason: None,
         network_approval_context: None,
     };
-    Some(
-        match sess.request_approval(action, approval_context).await {
+    let approval = sess.request_approval(action, approval_context).await;
+    Some(McpToolApproval {
+        decision: match approval.result {
             Ok(decision) => decision,
             Err(ToolError::Rejected(rejection)) => ReviewDecision::denied(rejection),
             Err(ToolError::Codex(_)) => ReviewDecision::Abort,
         },
-    )
+        source: approval.source,
+    })
 }
 
 pub(crate) async fn request_mcp_tool_user_approval(

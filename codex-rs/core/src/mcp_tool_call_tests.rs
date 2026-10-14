@@ -2944,7 +2944,13 @@ async fn permission_request_hook_allows_mcp_tool_call() {
     )
     .await;
 
-    assert_eq!(decision, Some(ReviewDecision::Approved));
+    assert_eq!(
+        decision,
+        Some(McpToolApproval {
+            decision: ReviewDecision::Approved,
+            source: Some(ApprovalResolutionSource::Hook),
+        })
+    );
     let log = std::fs::read_to_string(log_path).expect("read MCP permission hook log");
     let inputs = log
         .lines()
@@ -3015,7 +3021,13 @@ async fn permission_request_hook_uses_hook_tool_name_without_metadata() {
     )
     .await;
 
-    assert_eq!(decision, Some(ReviewDecision::Approved));
+    assert_eq!(
+        decision,
+        Some(McpToolApproval {
+            decision: ReviewDecision::Approved,
+            source: Some(ApprovalResolutionSource::Hook),
+        })
+    );
     let log = std::fs::read_to_string(log_path).expect("read MCP permission hook log");
     let inputs = log
         .lines()
@@ -3102,7 +3114,13 @@ async fn permission_request_hook_runs_after_remembered_mcp_approval() {
     )
     .await;
 
-    assert_eq!(decision, Some(ReviewDecision::Approved));
+    assert_eq!(
+        decision,
+        Some(McpToolApproval {
+            decision: ReviewDecision::Approved,
+            source: None,
+        })
+    );
     assert!(
         !log_path.exists(),
         "remembered approval should skip PermissionRequest hooks"
@@ -3202,7 +3220,11 @@ async fn strict_auto_review_forces_guardian_for_mcp_policy_skip() {
     )
     .await;
 
-    let Some(ReviewDecision::Denied { rejection: message }) = decision else {
+    let Some(McpToolApproval {
+        decision: ReviewDecision::Denied { rejection: message },
+        source: Some(ApprovalResolutionSource::Guardian),
+    }) = decision
+    else {
         panic!("guardian-denied MCP approval should carry a rejection message");
     };
     assert!(message.contains("Reason: The tool call would expose private calendar data"));
@@ -3313,7 +3335,10 @@ async fn assert_mcp_user_approval_persistence(
             .await
             .expect("MCP approval task timed out")
             .expect("MCP approval task failed"),
-        Some(expected_decision),
+        Some(McpToolApproval {
+            decision: expected_decision,
+            source: Some(ApprovalResolutionSource::User),
+        }),
     );
 }
 
