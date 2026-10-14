@@ -1848,9 +1848,14 @@ async fn run_ratatui_app(
         }
     }
 
-    // Remote startup keeps its existing explicit --cd trust check. Resolving other
-    // remote folders requires authoritative project-root information from the server.
-    if !uses_remote_workspace || remote_cwd_override.is_some() {
+    // The shared overview does not open a workspace; session selection checks trust when needed.
+    // Embedded fallback cannot show the overview and still needs normal startup initialization.
+    if (!matches!(
+        session_selection,
+        resume_picker::SessionSelection::AgentsOverview
+    ) || matches!(app_server_target, AppServerTarget::Embedded))
+        && (!uses_remote_workspace || remote_cwd_override.is_some())
+    {
         let resumed_thread = if matches!(app_server_target, AppServerTarget::LocalDaemon { .. })
             && let resume_picker::SessionSelection::Resume(target) = &session_selection
         {
