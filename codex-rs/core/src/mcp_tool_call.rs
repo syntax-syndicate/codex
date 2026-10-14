@@ -469,6 +469,7 @@ async fn handle_approved_mcp_tool_call(
         .clone()
         .unwrap_or_else(|| JsonValue::Object(serde_json::Map::new()));
     let mut elicitation_type = None;
+    let mut request_error_code = None;
     let result = async {
         let result = async {
             let mut result = prepared_call
@@ -551,7 +552,10 @@ async fn handle_approved_mcp_tool_call(
                     ))
                 })
                 .await
-                .map_err(|error| format!("tool call error: {error:?}"))?;
+                .map_err(|error| {
+                    request_error_code = codex_rmcp_client::request_error_code(&error);
+                    format!("tool call error: {error:?}")
+                })?;
             crate::tools::record_confirmed_code_mode_send(
                 sess,
                 &turn_context.sub_id,
@@ -592,7 +596,7 @@ async fn handle_approved_mcp_tool_call(
             .await)
         }
         .await;
-        record_mcp_result_span_telemetry(&Span::current(), &result);
+        record_mcp_result_span_telemetry(&Span::current(), &result, request_error_code);
         result
     }
     .instrument(mcp_tool_call_span(
@@ -642,7 +646,7 @@ async fn handle_approved_mcp_tool_call(
     .await;
     maybe_track_codex_app_used(sess, step_context, &server, &metadata, elicitation_type).await;
 
-    let outcome = mcp_call_metric_outcome(&result);
+    let outcome = mcp_call_metric_outcome(&result).with_request_error_code(request_error_code);
     emit_mcp_call_metrics(
         &step_context.session_telemetry,
         &outcome,
@@ -720,8 +724,13 @@ fn record_server_fields(span: &Span, url: Option<&str>) {
     }
 }
 
-fn record_mcp_result_span_telemetry(span: &Span, result: &Result<CallToolResult, String>) {
-    record_mcp_call_outcome_span_telemetry(span, result);
+fn record_mcp_result_span_telemetry(
+    span: &Span,
+    result: &Result<CallToolResult, String>,
+    request_error_code: Option<&str>,
+) {
+    let outcome = mcp_call_metric_outcome(result).with_request_error_code(request_error_code);
+    record_mcp_call_outcome_span_telemetry(span, &outcome);
 
     let Some(span_telemetry) = result
         .as_ref()
