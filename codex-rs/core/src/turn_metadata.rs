@@ -276,7 +276,23 @@ impl TurnMetadataState {
         &self,
         execution: ExecutionMetadata<'_>,
     ) -> Option<serde_json::Value> {
-        let mut responses_metadata = self.mcp_metadata_template();
+        self.current_meta_value_for_tool_request(self.mcp_metadata_template(), execution)
+    }
+
+    pub(crate) fn current_meta_value_for_extension_request(
+        &self,
+        execution: ExecutionMetadata<'_>,
+    ) -> Option<serde_json::Value> {
+        // Native extensions need configured Responses metadata for request attribution,
+        // which the MCP template omits for external servers.
+        self.current_meta_value_for_tool_request(self.responses_metadata_template(), execution)
+    }
+
+    fn current_meta_value_for_tool_request(
+        &self,
+        mut responses_metadata: CodexResponsesMetadata,
+        execution: ExecutionMetadata<'_>,
+    ) -> Option<serde_json::Value> {
         if responses_metadata
             .extra
             .get("misalignment_override")
@@ -286,7 +302,7 @@ impl TurnMetadataState {
             responses_metadata.extra.remove("misalignment_override");
         }
         execution.apply_to(&mut responses_metadata);
-        // Never serialize harness-owned tool inventory for external MCP servers.
+        // Never serialize harness-owned tool inventory for tool requests.
         responses_metadata.tool_namespaces_info = None;
         let Value::Object(mut metadata) = responses_metadata.turn_metadata_value()? else {
             return None;

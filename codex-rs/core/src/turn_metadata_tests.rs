@@ -972,6 +972,14 @@ fn turn_metadata_state_merges_client_metadata_without_replacing_reserved_fields(
     assert!(meta.get(WINDOW_ID_KEY).is_none());
     assert!(meta.get("codex_security_surface").is_none());
     assert!(meta.get(ANALYTICS_ENABLED_KEY).is_none());
+    let extension_meta = state
+        .current_meta_value_for_extension_request(test_mcp_turn_metadata_context())
+        .expect("extension metadata should be present");
+    assert_eq!(extension_meta["codex_security_surface"], "sdk");
+    assert_eq!(extension_meta["source"], " Configured_Source ");
+    assert_eq!(extension_meta[TURN_TRIGGER_KEY], "goal");
+    assert_eq!(extension_meta["model"], "gpt-5.4");
+    assert!(extension_meta.get(TOOL_NAMESPACES_INFO_KEY).is_none());
     assert_eq!(state.workspace_kind().as_deref(), Some("projectless"));
     assert_eq!(
         (state.turn_trigger(), state.codex_turn_source()),
