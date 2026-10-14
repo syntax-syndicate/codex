@@ -17,6 +17,7 @@ use codex_extension_api::ExtensionMetrics;
 use codex_extension_api::ExtensionRegistryBuilder;
 use codex_extension_api::ExtensionWarning;
 use codex_extension_api::PromptFragment;
+use codex_extension_api::PromptSlot;
 use codex_extension_api::SelectedPluginSnapshot;
 use codex_extension_api::SkillInvocationContributor;
 use codex_extension_api::SkillInvocationInput;
@@ -239,7 +240,7 @@ where
             rendered
                 .fragment
                 .map(|fragment| {
-                    PromptFragment::developer_capability(fragment.render(), fragment.content_kind())
+                    PromptFragment::from_fragment(PromptSlot::DeveloperCapabilities, &fragment)
                 })
                 .into_iter()
                 .collect()
