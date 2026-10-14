@@ -853,6 +853,19 @@ impl Daemon {
         backend::pid_update_loop_backend(self.backend_paths(&settings))
             .stop()
             .await?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::FileTypeExt;
+
+            // A stopped older updater can leave its socket behind. Remove only
+            // the rendezvous entry before starting, so readiness cannot be stale.
+            let path = self.manual_update_socket_path();
+            if let Ok(metadata) = tokio::fs::symlink_metadata(&path).await
+                && (metadata.file_type().is_socket() || metadata.file_type().is_symlink())
+            {
+                tokio::fs::remove_file(path).await?;
+            }
+        }
         if let Some(backend) = self.running_backend_instance(&settings).await? {
             if let Err(err) = thread_recovery::discard_pending(self) {
                 eprintln!("warning: failed to clear stale daemon recovery before bootstrap: {err}");
@@ -866,6 +879,46 @@ impl Daemon {
         backend.start().await?;
         let info = self.wait_until_ready().await?;
         let auto_update_enabled = managed.ensure_managed_updater(&settings).await?;
+        #[cfg(unix)]
+        // Older automatic updaters have no manual request socket to wait for.
+        if auto_update_enabled
+            && managed_install::supports_daemon_command(
+                &managed.managed_codex_bin,
+                &["update", "--help"],
+            )
+            .await
+        {
+            use std::os::unix::fs::FileTypeExt;
+
+            let updater = backend::pid_update_loop_backend(managed.backend_paths(&settings));
+            let path = managed.manual_update_socket_path();
+            // Match the manual-update client's startup allowance: the updater
+            // verifies its executable before publishing its listener.
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+            loop {
+                // Do not connect: even an empty probe can consume a one-shot
+                // updater's restore authority. Old updaters also publish sockets.
+                let running = updater.is_starting_or_running().await?;
+                if running
+                    && tokio::fs::metadata(&path)
+                        .await
+                        .is_ok_and(|metadata| metadata.file_type().is_socket())
+                {
+                    break;
+                }
+                if !running || tokio::time::Instant::now() >= deadline {
+                    let reason = if running { "timed out" } else { "exited" };
+                    let mut context = format!(
+                        "daemon updater {reason} before becoming ready on {}",
+                        path.display()
+                    );
+                    backend::append_stderr_log_tail_context(&managed.update_pid_file, &mut context)
+                        .await;
+                    return Err(anyhow!(context));
+                }
+                sleep(START_POLL_INTERVAL).await;
+            }
+        }
         let managed_codex_version = managed.managed_codex_version_best_effort().await;
         Ok(BootstrapOutput {
             status: BootstrapStatus::Bootstrapped,

@@ -172,6 +172,52 @@ fn managed_daemon_restarts_from_deleted_working_directory() -> Result<()> {
 }
 
 #[test]
+fn bootstrap_updater_is_ready_in_deep_codex_home() -> Result<()> {
+    let mut daemon = TestDaemon::new()?;
+    let deep_home = tempfile::Builder::new()
+        .prefix(&"deep-codex-home-".repeat(8))
+        .tempdir_in("/tmp")?;
+    for name in ["packages", "app-server-daemon"] {
+        std::fs::rename(daemon.home.path().join(name), deep_home.path().join(name))?;
+    }
+    daemon.home = deep_home;
+    let state = daemon.home.path().join("app-server-daemon");
+    std::fs::write(
+        state.join("settings.json"),
+        br#"{"shutdownGraceSeconds":0}"#,
+    )?;
+    let socket = state.join("app-server-updater.sock");
+    let result = daemon.lifecycle("bootstrap")?;
+    assert_eq!(result["autoUpdateEnabled"], true);
+    assert_eq!(result["status"], "bootstrapped");
+    signal(daemon.pid("app-server-updater.pid")?, /*signal*/ 0)?;
+    let target = socket.canonicalize()?;
+    let _connection = std::os::unix::net::UnixStream::connect(target)?;
+    assert_eq!(daemon.lifecycle("version")?["status"], "running");
+    Ok(())
+}
+
+#[test]
+fn bootstrap_reports_updater_bind_failure() -> Result<()> {
+    let daemon = TestDaemon::new()?;
+    let state = daemon.home.path().join("app-server-daemon");
+    std::fs::write(
+        state.join("settings.json"),
+        br#"{"shutdownGraceSeconds":0}"#,
+    )?;
+    let socket = state.join("app-server-updater.sock");
+    std::fs::write(&socket, b"not a socket")?;
+    let result = daemon
+        .command()
+        .args(["app-server", "daemon", "bootstrap"])
+        .output()?;
+    assert!(!result.status.success());
+    assert_eq!(std::fs::read(socket)?, b"not a socket");
+    assert_eq!(daemon.lifecycle("version")?["status"], "running");
+    Ok(())
+}
+
+#[test]
 fn explicit_restart_applies_feature_overrides_and_preserves_saved_settings() -> Result<()> {
     let daemon = TestDaemon::new()?;
     let settings_path = daemon.home.path().join("app-server-daemon/settings.json");
