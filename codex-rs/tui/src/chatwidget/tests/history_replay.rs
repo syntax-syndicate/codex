@@ -70,7 +70,12 @@ async fn resumed_initial_messages_render_history() {
     );
 
     // Session hydration can precede the account update on ChatGPT sign-in.
-    chat.status_account_display = None;
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.set_feature_enabled(Feature::CliDaybreak, /*enabled*/ true);
+    chat.show_welcome_banner = false;
+    chat.local_settings.tui.show_tooltips = false;
+    chat.config.cwd = configured.cwd.clone();
+    chat.transcript.active_cell = Some(ChatWidget::placeholder_session_header_cell(&chat.config));
     configured.thread_id = ThreadId::new();
     chat.handle_thread_session(configured);
     assert!(chat.daybreak_enabled);
@@ -92,27 +97,18 @@ async fn resumed_initial_messages_render_history() {
         ReplayKind::ResumeInitialMessages,
     );
 
-    let cells = drain_insert_history(&mut rx);
-    let mut merged_lines = Vec::new();
-    for lines in cells {
-        let text = lines
-            .iter()
-            .flat_map(|line| line.spans.iter())
-            .map(|span| span.content.clone())
-            .collect::<String>();
-        merged_lines.push(text);
-    }
-
-    let text_blob = merged_lines.join("\n");
-    assert!(
-        text_blob.contains("hello from user"),
-        "expected replayed user message",
-    );
-    assert!(
-        text_blob.contains("assistant reply"),
-        "expected replayed agent message",
-    );
-    insta::assert_snapshot!("resumed_daybreak_banner", merged_lines[0]);
+    let history = drain_insert_history(&mut rx)
+        .iter()
+        .flatten()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n")
+        .replace(CODEX_CLI_VERSION, "<VERSION>")
+        .replace(
+            &test_path_display("/home/user/project"),
+            "/home/user/project",
+        );
+    insta::assert_snapshot!("resumed_daybreak_banner", history);
 }
 
 #[tokio::test]
