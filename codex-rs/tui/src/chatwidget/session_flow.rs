@@ -3,6 +3,7 @@
 //! checks the previous model when it applies the final selection.
 
 use super::*;
+use crate::history_cell::ForkedThreadHistoryCell;
 use crate::style::accent_color;
 
 impl ChatWidget {
@@ -310,7 +311,7 @@ impl ChatWidget {
             .into()
         };
         self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
-            PlainHistoryCell::new(vec![line]),
+            ForkedThreadHistoryCell(PlainHistoryCell::new(vec![line])),
         )));
     }
 
