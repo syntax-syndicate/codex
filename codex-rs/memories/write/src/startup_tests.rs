@@ -520,12 +520,12 @@ async fn memories_startup_phase2_prunes_old_extension_resources() -> anyhow::Res
     .await?;
     let old_file = chronicle_resources.join(format!(
         "{}-abcd-10min-old.md",
-        (now - chrono::Duration::days(8)).format("%Y-%m-%dT%H-%M-%S")
+        (now - chrono::Duration::days(15)).format("%Y-%m-%dT%H-%M-%S")
     ));
     tokio::fs::write(&old_file, "old resource").await?;
     let recent_file = chronicle_resources.join(format!(
         "{}-abcd-10min-recent.md",
-        (now - chrono::Duration::days(6)).format("%Y-%m-%dT%H-%M-%S")
+        (now - chrono::Duration::days(13)).format("%Y-%m-%dT%H-%M-%S")
     ));
     tokio::fs::write(&recent_file, "recent resource").await?;
     seed_required_memory_artifacts(&home.path().join("memories")).await?;
@@ -586,7 +586,7 @@ async fn memories_startup_phase2_prunes_old_extension_resources_without_stage1_i
     .await?;
     let old_file = chronicle_resources.join(format!(
         "{}-abcd-10min-old.md",
-        (now - chrono::Duration::days(8)).format("%Y-%m-%dT%H-%M-%S")
+        (now - chrono::Duration::days(15)).format("%Y-%m-%dT%H-%M-%S")
     ));
     tokio::fs::write(&old_file, "old resource").await?;
     seed_required_memory_artifacts(&home.path().join("memories")).await?;
