@@ -22,6 +22,7 @@ use codex_protocol::models::PermissionProfile;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelServiceTier;
 use codex_protocol::openai_models::ModelsResponse;
+use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::EventMsg;
@@ -32,6 +33,8 @@ use codex_protocol::protocol::ItemStartedEvent;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::protocol::WarningEvent;
+use codex_protocol::request_user_input::RequestUserInputAnswer;
+use codex_protocol::request_user_input::RequestUserInputResponse;
 use codex_protocol::user_input::UserInput;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::PathUri;
@@ -4690,7 +4693,18 @@ async fn paginated_compaction_cold_resume_from_bounded_suffix() -> Result<()> {
         &server,
         vec![
             sse(vec![
-                ev_function_call(DUMMY_CALL_ID, DUMMY_FUNCTION_NAME, "{}"),
+                ev_function_call(
+                    DUMMY_CALL_ID,
+                    "request_user_input",
+                    &json!({"questions": [{
+                        "id": "next", "header": "Next", "question": "Continue?",
+                        "options": [
+                            {"label": "Yes", "description": "Continue."},
+                            {"label": "No", "description": "Stop."}
+                        ]
+                    }]})
+                    .to_string(),
+                ),
                 ev_completed_with_tokens("before-compact", /*total_tokens*/ 96),
             ]),
             sse(vec![
@@ -4744,6 +4758,8 @@ async fn paginated_compaction_cold_resume_from_bounded_suffix() -> Result<()> {
         },
     )
     .await?;
+    // The resumed turn retains its frozen settings, even after an in-flight update.
+    let expected_settings = test.codex.thread_settings_snapshot().await;
     let codex_core::TurnInputSubmission::Started { turn_id, .. } = test
         .codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
@@ -4754,11 +4770,38 @@ async fn paginated_compaction_cold_resume_from_bounded_suffix() -> Result<()> {
     else {
         panic!("initial turn did not start");
     };
+    // Change settings while the turn is blocked, before compaction checkpoints its lineage.
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::RequestUserInput(_))
+    })
+    .await;
+    core_test_support::submit_thread_settings(
+        &test.codex,
+        ThreadSettingsOverrides {
+            effort: Some(Some(ReasoningEffort::High)),
+            ..Default::default()
+        },
+    )
+    .await?;
+    test.codex.checkpoint_thread_settings().await?;
+    test.codex
+        .submit(Op::UserInputAnswer {
+            id: turn_id.clone(),
+            response: RequestUserInputResponse {
+                answers: [(
+                    "next".into(),
+                    RequestUserInputAnswer {
+                        answers: vec!["Yes".into()],
+                    },
+                )]
+                .into(),
+            },
+        })
+        .await?;
     wait_for_event(&test.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
     })
     .await;
-    let expected_settings = test.codex.thread_settings_snapshot().await;
     let path = test.codex.rollout_path().expect("rollout path");
     test.codex.shutdown_and_wait().await?;
     test.thread_manager
