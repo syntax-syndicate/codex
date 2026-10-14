@@ -281,7 +281,10 @@ async fn daemon_startup(command: &str) -> Result<()> {
             steps.push_back(("·daemon-restart-test", b"/daemon\r"));
             steps.push_back(("Restartbackgroundserver", b"2"));
             steps.push_back(("Restartbackgroundserver?", b"2\r"));
-            steps.push_back(("GPT-5.6-Terra", b"/status\r"));
+            // Offline editing preserves text but suppresses Enter. Observe the command
+            // popup in a complete connected frame before submitting the retained draft.
+            steps.push_back(("GPT-5.6-Terra", b"/status"));
+            steps.push_back(("/statusshowcurrentsessionconfigurationandtokenusage", b"\r"));
             "Server:Localbackgroundserver"
         } else if elevated_launch || command == "restrictive-job" && elevated {
             if let Some(action) = command.strip_prefix("elevated-") {
@@ -401,6 +404,15 @@ async fn daemon_startup(command: &str) -> Result<()> {
                         *query = "";
                     }
                 }
+                // PTY reads can split a redraw after the reconnect notice is erased but
+                // before it is repainted. Only inspect completed synchronized updates.
+                if command == "discovered"
+                    && output
+                        .rfind("\x1b[?2026l")
+                        .is_none_or(|end| output[end..].contains("\x1b[?2026h"))
+                {
+                    continue;
+                }
                 let text: String = screen
                     .screen()
                     .contents()
@@ -421,14 +433,14 @@ async fn daemon_startup(command: &str) -> Result<()> {
                             }) {
                                 continue;
                             }
-                            // The old header can linger while the daemon stops. Do not send
-                            // /status until the new process is up and reconnect has finished.
-                            if steps.len() == 1
-                                && (!fs::read(&pid_file).is_ok_and(|pid| Some(pid) != existing_daemon)
-                                    || text.contains("Reconnecting"))
-                            {
-                                continue;
-                            }
+                        }
+                        // The old header can linger while the daemon stops. Check both
+                        // the draft and its Enter against the replacement process and UI.
+                        if (*input == b"/status" || *input == b"\r")
+                            && (!fs::read(&pid_file).is_ok_and(|pid| Some(pid) != existing_daemon)
+                                || text.contains("Reconnecting"))
+                        {
+                            continue;
                         }
                     }
                     if disabling && *ready == "Backgroundserverhasincompatiblefeaturesettings" {
