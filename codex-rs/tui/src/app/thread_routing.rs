@@ -924,6 +924,13 @@ impl App {
                 Ok(true)
             }
             AppCommand::ListSkills { cwds, force_reload } => {
+                // A queued refresh can outlive the workspace it was requested for.
+                if !cwds
+                    .iter()
+                    .any(|cwd| cwd == self.chat_widget.config_ref().cwd.as_path())
+                {
+                    return Ok(true);
+                }
                 self.handle_skills_list_result(
                     app_server
                         .skills_list(codex_app_server_protocol::SkillsListParams {

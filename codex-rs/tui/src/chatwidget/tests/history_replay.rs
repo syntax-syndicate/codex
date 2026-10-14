@@ -597,7 +597,7 @@ async fn replayed_user_message_preserves_remote_image_urls() {
 
 #[tokio::test]
 async fn session_configured_syncs_widget_config_permissions_and_cwd() {
-    let (mut chat, _rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+    let (mut chat, _rx, mut ops) = make_chatwidget_manual(/*model_override*/ None).await;
 
     chat.config
         .permissions
@@ -675,6 +675,13 @@ async fn session_configured_syncs_widget_config_permissions_and_cwd() {
         expected_app_server_permission_profile
     );
     assert_eq!(&chat.config_ref().cwd, &expected_cwd);
+    while ops.try_recv().is_ok() {}
+    chat.handle_manage_skills_closed();
+    assert!(matches!(
+        ops.try_recv(),
+        Ok(AppCommand::ListSkills { cwds, force_reload: true })
+            if cwds == vec![expected_cwd.to_path_buf()]
+    ));
 
     let updated_profile = PermissionProfile::workspace_write();
     chat.set_permission_profile_from_session_snapshot(PermissionProfileSnapshot::legacy(
