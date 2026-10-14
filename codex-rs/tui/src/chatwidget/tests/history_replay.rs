@@ -1631,15 +1631,38 @@ async fn live_reasoning_summary_drops_empty_parts_without_losing_content() {
 async fn thread_snapshot_replayed_turn_started_marks_task_running() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
-    replay_turn_started(&mut chat, ReplayKind::ThreadSnapshot);
+    let started_at = chrono::Utc::now().timestamp() - 125;
+    chat.handle_server_notification(
+        ServerNotification::TurnStarted(TurnStartedNotification {
+            thread_id: "thread-1".to_string(),
+            turn: AppServerTurn {
+                started_at: Some(started_at),
+                ..app_server_turn(
+                    "turn-1",
+                    AppServerTurnStatus::InProgress,
+                    /*duration_ms*/ None,
+                    /*error*/ None,
+                )
+            },
+        }),
+        Some(ReplayKind::ThreadSnapshot),
+    );
 
     drain_insert_history(&mut rx);
     assert!(chat.bottom_pane.is_task_running());
-    let status = chat
-        .bottom_pane
-        .status_widget()
-        .expect("status indicator should be visible");
-    assert_eq!(status.header(), "Working");
+    let before = chrono::Utc::now().timestamp() - started_at;
+    let elapsed = chat.bottom_pane.status_elapsed().unwrap().as_secs() as i64;
+    let after = chrono::Utc::now().timestamp() - started_at;
+    // The wire timestamp has second precision; reads may be separated by any CI delay.
+    assert!(
+        (before - 1..=after).contains(&elapsed),
+        "{elapsed} not in {before}..={after}"
+    );
+    let timer = regex_lite::Regex::new(r"\(\d+(?:h \d+m \d+s|m \d+s|s) •").unwrap();
+    insta::assert_snapshot!(
+        timer.replace_all(render_bottom_first_row(&chat, /*width*/ 80).trim(), "(<elapsed> •"),
+        @"• Working (<elapsed> • esc to interrupt)"
+    );
 }
 
 #[tokio::test]
@@ -1655,9 +1678,11 @@ async fn replayed_in_progress_turn_marks_task_running() {
             let (mut chat, mut rx, mut op_rx) =
                 make_chatwidget_manual(/*model_override*/ None).await;
             chat.thread_id = Some(ThreadId::new());
+            let started_at = chrono::Utc::now().timestamp() - 125;
             chat.replay_thread_turns(
                 vec![AppServerTurn {
                     items_view,
+                    started_at: Some(started_at),
                     ..app_server_turn(
                         "turn-1",
                         AppServerTurnStatus::InProgress,
@@ -1676,9 +1701,20 @@ async fn replayed_in_progress_turn_marks_task_running() {
                 ),
                 (true, Some("turn-1")),
             );
+            let before = chrono::Utc::now().timestamp() - started_at;
+            let elapsed = chat.bottom_pane.status_elapsed().unwrap().as_secs() as i64;
+            let after = chrono::Utc::now().timestamp() - started_at;
+            assert!(
+                (before - 1..=after).contains(&elapsed),
+                "{elapsed} not in {before}..={after}"
+            );
+            let timer = regex_lite::Regex::new(r"\(\d+(?:h \d+m \d+s|m \d+s|s) •").unwrap();
             assert_chatwidget_snapshot!(
                 "replayed_in_progress_turn",
-                normalize_snapshot_paths(render_bottom_popup(&chat, /*width*/ 80)),
+                timer.replace_all(
+                    &normalize_snapshot_paths(render_bottom_popup(&chat, /*width*/ 80)),
+                    "(<elapsed> •"
+                ),
             );
 
             chat.handle_key_event(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
