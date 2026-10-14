@@ -316,7 +316,33 @@ async fn daemon_startup(command: &str) -> Result<()> {
             "UseAmazonBedrock"
         } else {
             args.extend([command.into(), "--strict-config".into()]);
-            steps.push_back(("Nosessionsyet", b"\x1b"));
+            if command == "resume" {
+                let thread_id = "00000000-0000-0000-0000-000000000001";
+                let sessions = home.path().join("sessions/2025/01/05");
+                fs::create_dir_all(&sessions)?;
+                let metadata = serde_json::json!({
+                    "timestamp": "2025-01-05T12:00:00Z",
+                    "type": "session_meta",
+                    "payload": {
+                        "session_id": thread_id, "id": thread_id,
+                        "timestamp": "2025-01-05T12:00:00Z", "cwd": workspace_path,
+                        "originator": "codex", "cli_version": "0.0.0",
+                        "source": "cli", "model_provider": "openai"
+                    }
+                });
+                let message = serde_json::json!({
+                    "timestamp": "2025-01-05T12:00:00Z",
+                    "type": "event_msg",
+                    "payload": {"type": "user_message", "message": "Saved resume session", "kind": "plain"}
+                });
+                fs::write(
+                    sessions.join(format!("rollout-2025-01-05T12-00-00-{thread_id}.jsonl")),
+                    format!("{metadata}\n{message}\n"),
+                )?;
+                steps.push_back(("Savedresumesession", b"\r"));
+            } else {
+                steps.push_back(("Nosessionsyet", b"\x1b"));
+            }
             steps.push_back(("GPT-5.6-Terra", b"\x14"));
             if elevated {
                 "Runningasadministrator:sharedbackgroundserverdisabled."
