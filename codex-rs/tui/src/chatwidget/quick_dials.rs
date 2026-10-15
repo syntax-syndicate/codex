@@ -145,6 +145,29 @@ impl ChatWidget {
         Ok(dial)
     }
 
+    pub(super) fn current_terminal_title_quick_dial(&self) -> Result<QuickDial, &'static str> {
+        status_surface_quick_dial::<TerminalTitleItem>(
+            "/title",
+            self.configured_terminal_title_items(),
+            /*suffix*/ None,
+            "Choose available terminal-title items with /title before saving.",
+        )
+    }
+
+    pub(super) fn current_status_line_quick_dial(&self) -> Result<QuickDial, &'static str> {
+        let colors = if self.local_settings.tui.status_line_use_colors {
+            "--colors"
+        } else {
+            "--no-colors"
+        };
+        status_surface_quick_dial::<StatusLineItem>(
+            "/statusline",
+            self.configured_status_line_items(),
+            /*suffix*/ Some(colors),
+            "Choose available status-line items with /statusline before saving.",
+        )
+    }
+
     fn quick_dials_available(&mut self) -> bool {
         if self.blocks_direct_input
             || self.active_side_conversation
@@ -384,9 +407,13 @@ impl ChatWidget {
             .unwrap_or(Err(
                 "Select a named permission profile with /permissions first.",
             ));
+        let terminal_title = self.current_terminal_title_quick_dial();
+        let status_line = self.current_status_line_quick_dial();
         let items = [
             ("Current model", self.current_model_quick_dial()),
             ("Current permissions", permissions),
+            ("Current terminal title", terminal_title),
+            ("Current status line", status_line),
         ]
         .into_iter()
         .map(|(name, dial)| {
@@ -415,7 +442,7 @@ impl ChatWidget {
         .collect();
         self.bottom_pane.show_selection_view(SelectionViewParams {
             view_id: Some("quick-dial-prefills"),
-            max_visible_rows: 2,
+            max_visible_rows: 4,
             title: Some("Start preset from current settings".into()),
             items,
             ..SelectionViewParams::picker()
@@ -565,4 +592,39 @@ impl ChatWidget {
         }
         consumed
     }
+}
+
+fn status_surface_quick_dial<T>(
+    command: &str,
+    item_ids: Vec<String>,
+    suffix: Option<&str>,
+    invalid_items_error: &'static str,
+) -> Result<QuickDial, &'static str>
+where
+    T: std::str::FromStr + ToString,
+{
+    let items = item_ids
+        .into_iter()
+        .map(|id| {
+            id.parse::<T>()
+                .map(|item| item.to_string())
+                .map_err(|_| invalid_items_error)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut input = command.to_string();
+    if items.is_empty() {
+        input.push_str(" --clear");
+    } else {
+        for item in items {
+            input.push(' ');
+            input.push_str(&item);
+        }
+    }
+    if let Some(suffix) = suffix {
+        input.push(' ');
+        input.push_str(suffix);
+    }
+    let dial = QuickDial { input, label: None };
+    dial.validate()?;
+    Ok(dial)
 }
