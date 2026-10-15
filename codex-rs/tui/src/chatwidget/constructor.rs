@@ -130,6 +130,7 @@ impl ChatWidget {
             model_popup_request_id: None,
             permission_popup_request_id: None,
             permission_discovery: None,
+            inline_permission_profile_selection: None,
             worktree_popup_request_id: None,
             permission_profiles_menu_opened: false,
             model_popup_model_ids: Vec::new(),

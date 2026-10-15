@@ -544,6 +544,8 @@ pub(crate) struct ChatWidget {
     model_popup_request_id: Option<uuid::Uuid>,
     permission_popup_request_id: Option<uuid::Uuid>,
     permission_discovery: Option<crate::permission_discovery::PermissionDiscovery>,
+    inline_permission_profile_selection:
+        Option<permission_discovery::InlinePermissionProfileSelection>,
     worktree_popup_request_id: Option<uuid::Uuid>,
     permission_profiles_menu_opened: bool,
     model_popup_model_ids: Vec<String>,

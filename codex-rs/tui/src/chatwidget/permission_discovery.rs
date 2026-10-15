@@ -5,7 +5,22 @@ use crate::permission_discovery::PermissionDiscovery;
 
 pub(super) const VIEW_ID: &str = "permission-profiles";
 
+pub(super) enum InlinePermissionProfileSelection {
+    Discovering(String),
+    Applying,
+}
+
 impl ChatWidget {
+    pub(crate) fn select_permission_profile_by_id(&mut self, profile_id: &str) {
+        self.set_queue_autosend_suppressed(/*suppressed*/ true);
+        self.inline_permission_profile_selection = Some(
+            InlinePermissionProfileSelection::Discovering(profile_id.to_string()),
+        );
+        if !self.apply_pending_permission_profile() {
+            self.request_permission_profiles();
+        }
+    }
+
     pub(crate) fn retain_input_after_failed_permission_selection(&mut self) {
         self.input_queue.recovered_queue |= self.input_queue.has_queued_follow_up_messages()
             || !self.input_queue.pending_steers.is_empty();
@@ -13,6 +28,54 @@ impl ChatWidget {
             self.restore_user_message_to_composer(message);
         }
     }
+
+    pub(super) fn apply_pending_permission_profile(&mut self) -> bool {
+        let Some(discovery) = self.permission_discovery.clone() else {
+            return false;
+        };
+        let Some(profile_id) = self.pending_permission_profile_id().map(str::to_owned) else {
+            return false;
+        };
+        self.inline_permission_profile_selection = Some(InlinePermissionProfileSelection::Applying);
+        if !self.try_select_permission_profile_by_id(&discovery, &profile_id) {
+            self.recover_inline_permission_profile_selection();
+        }
+        self.app_event_tx.send(AppEvent::SettingsSelectionClosed);
+        true
+    }
+
+    pub(super) fn cancel_pending_permission_profile_selection(&mut self) -> bool {
+        if self.pending_permission_profile_id().is_none() {
+            return false;
+        }
+        self.recover_inline_permission_profile_selection();
+        self.app_event_tx.send(AppEvent::SettingsSelectionClosed);
+        true
+    }
+
+    pub(crate) fn complete_inline_permission_profile_selection(&mut self) -> bool {
+        self.inline_permission_profile_selection.take().is_some()
+    }
+
+    pub(crate) fn recover_inline_permission_profile_selection(&mut self) -> bool {
+        if !self.complete_inline_permission_profile_selection() {
+            return false;
+        }
+        self.retain_input_after_failed_permission_selection();
+        true
+    }
+
+    pub(crate) fn inline_permission_profile_selection_pending(&self) -> bool {
+        self.inline_permission_profile_selection.is_some()
+    }
+
+    fn pending_permission_profile_id(&self) -> Option<&str> {
+        match self.inline_permission_profile_selection.as_ref() {
+            Some(InlinePermissionProfileSelection::Discovering(profile_id)) => Some(profile_id),
+            Some(InlinePermissionProfileSelection::Applying) | None => None,
+        }
+    }
+
     pub(crate) fn request_permission_profiles(&mut self) {
         self.bottom_pane.dismiss_view_by_id(VIEW_ID);
         if let Some(discovery) = self.permission_discovery.clone() {
@@ -44,6 +107,9 @@ impl ChatWidget {
     pub(super) fn invalidate_permission_discovery(&mut self) {
         self.permission_popup_request_id = None;
         self.bottom_pane.dismiss_view_by_id(VIEW_ID);
+        if self.recover_inline_permission_profile_selection() {
+            self.app_event_tx.send(AppEvent::SettingsSelectionClosed);
+        }
     }
 
     pub(crate) fn permission_popup_request_is_current(&self, request_id: uuid::Uuid) -> bool {
@@ -63,26 +129,46 @@ impl ChatWidget {
             self.permission_discovery = Some(discovery.clone());
         }
         if !self.bottom_pane.dismiss_active_view_if_id(VIEW_ID) {
-            self.bottom_pane.dismiss_view_by_id(VIEW_ID);
+            let was_covered = self.bottom_pane.dismiss_view_by_id(VIEW_ID);
+            if was_covered && result.is_ok() {
+                return;
+            }
+            if let Err(message) = result
+                && self.pending_permission_profile_id().is_some()
+            {
+                self.add_error_message(message);
+            }
+            self.cancel_pending_permission_profile_selection();
             return;
         }
         match result {
             Ok(discovery) => {
-                self.permission_profiles_menu_opened = true;
-                self.open_permission_profiles_popup(discovery);
+                if !self.apply_pending_permission_profile() {
+                    self.permission_profiles_menu_opened = true;
+                    self.open_permission_profiles_popup(discovery);
+                }
             }
-            Err(message) => self.bottom_pane.show_selection_view(SelectionViewParams {
-                view_id: Some(VIEW_ID),
-                title: Some("Update Model Permissions".to_string()),
-                subtitle: Some(message),
-                items: vec![SelectionItem {
-                    name: "Retry".to_string(),
-                    actions: vec![Box::new(|tx| tx.send(AppEvent::OpenPermissionsPopup))],
-                    dismiss_on_select: true,
-                    ..Default::default()
-                }],
-                ..SelectionViewParams::picker()
-            }),
+            Err(message) => {
+                let retry_profile_id = self.pending_permission_profile_id().map(str::to_owned);
+                self.bottom_pane.show_selection_view(SelectionViewParams {
+                    view_id: Some(VIEW_ID),
+                    title: Some("Update Model Permissions".to_string()),
+                    subtitle: Some(message),
+                    items: vec![SelectionItem {
+                        name: "Retry".to_string(),
+                        actions: vec![Box::new(move |tx| {
+                            if let Some(profile_id) = retry_profile_id.clone() {
+                                tx.send(AppEvent::ResolvePermissionProfile { profile_id });
+                            } else {
+                                tx.send(AppEvent::OpenPermissionsPopup);
+                            }
+                        })],
+                        dismiss_on_select: false,
+                        ..Default::default()
+                    }],
+                    ..SelectionViewParams::picker()
+                });
+            }
         }
     }
 }

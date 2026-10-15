@@ -806,12 +806,26 @@ impl ChatWidget {
             source,
         } = prepared;
         let trimmed = args.trim();
+        if trimmed.is_empty() {
+            self.dispatch_command_from_source(cmd, source);
+            return;
+        }
         match cmd {
             SlashCommand::Model if !trimmed.is_empty() => {
                 self.handle_model_command_args(trimmed);
                 self.app_event_tx.send(AppEvent::SettingsSelectionClosed);
             }
-            SlashCommand::Export if trimmed.is_empty() => self.show_transcript_export_popup(),
+            SlashCommand::Permissions
+                if self.windows_sandbox_local_server
+                    && self.windows_sandbox_host != WindowsSandboxHost::Remote
+                    && self.windows_sandbox_config.requirements.is_none() =>
+            {
+                self.set_queue_autosend_suppressed(/*suppressed*/ true);
+                self.app_event_tx.send(AppEvent::ResolvePermissionProfile {
+                    profile_id: trimmed.to_string(),
+                });
+            }
+            SlashCommand::Permissions => self.select_permission_profile_by_id(trimmed),
             SlashCommand::Export => {
                 self.set_queue_autosend_suppressed(/*suppressed*/ true);
                 self.app_event_tx.send(AppEvent::ExportTranscript {
