@@ -326,6 +326,7 @@ mod model_command;
 mod model_popup_state;
 mod model_popups;
 mod notifications;
+pub(crate) mod quick_dials;
 mod session_model_selection;
 use self::notifications::Notification;
 pub(crate) use self::session_model_selection::AstraModelPickerAction;

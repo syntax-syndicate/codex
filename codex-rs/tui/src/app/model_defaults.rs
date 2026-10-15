@@ -23,8 +23,8 @@ impl App {
         effort: Option<ReasoningEffort>,
         service_tier: Option<String>,
     ) {
-        let model_changed = self.chat_widget.current_model() != model
-            || self.chat_widget.current_collaboration_mode().model() != model;
+        // Changing effort or speed for the effective model must preserve permissions.
+        let model_changed = self.chat_widget.current_model() != model;
         let params = if model_changed {
             self.active_thread_model_setting_update_params(model.clone())
         } else {
@@ -57,7 +57,10 @@ impl App {
                 if app_server.thread_settings_update_supported {
                     return;
                 }
-                if service_tier.is_some() {
+                if service_tier
+                    .as_deref()
+                    .is_some_and(|tier| tier != SERVICE_TIER_DEFAULT_REQUEST_VALUE)
+                {
                     self.chat_widget.add_error_message(
                         "Model selection requires an app server with thread/settings/update support."
                             .into(),
@@ -77,8 +80,13 @@ impl App {
         let clear_plan_ultra = self.chat_widget.config_ref().plan_mode_reasoning_effort
             == Some(ReasoningEffort::Ultra)
             && self.config.plan_mode_reasoning_effort != Some(ReasoningEffort::Ultra);
-        self.chat_widget.set_model(&model);
-        if !in_plan_mode || ultra || clear_default_ultra {
+        if model_changed {
+            self.chat_widget.set_model(&model);
+        }
+        if !in_plan_mode
+            || (self.chat_widget.current_collaboration_mode().model() == model
+                && (ultra || clear_default_ultra))
+        {
             self.chat_widget.set_reasoning_effort(effort.clone());
         }
         if in_plan_mode || ultra || clear_plan_ultra {

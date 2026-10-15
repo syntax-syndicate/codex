@@ -2,6 +2,7 @@ use super::*;
 use crate::collaboration_modes;
 use codex_app_server_client::AppServerClient;
 use codex_config::LoaderOverrides;
+use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
 use crossterm::event::KeyCode;
 use pretty_assertions::assert_eq;
 
@@ -112,6 +113,44 @@ async fn session_model_selection_preserves_defaults_and_updates_active_thread() 
         );
         server.shutdown().await?;
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn standard_speed_selection_falls_back_for_older_app_servers() -> Result<()> {
+    let (mut app, mut events, mut ops) = make_test_app_with_channels().await;
+    app.config.service_tier = Some("flex".into());
+    let mut server = Box::pin(crate::start_embedded_app_server_for_picker(&app.config)).await?;
+    let started = server.start_thread(&app.config).await?;
+    app.enqueue_primary_thread_session(started.session, started.turns)
+        .await?;
+    app.chat_widget.set_service_tier(Some("flex".into()));
+    server.thread_settings_update_supported = false;
+    while events.try_recv().is_ok() {}
+    while ops.try_recv().is_ok() {}
+
+    app.select_session_model(
+        &mut server,
+        "gpt-5.6-terra".into(),
+        Some(ReasoningEffortConfig::High),
+        Some(SERVICE_TIER_DEFAULT_REQUEST_VALUE.into()),
+    )
+    .await;
+
+    assert_eq!(
+        app.chat_widget.current_service_tier(),
+        Some(SERVICE_TIER_DEFAULT_REQUEST_VALUE)
+    );
+    assert_eq!(app.config.service_tier.as_deref(), Some("flex"));
+    app.chat_widget.apply_external_edit("continue".into());
+    app.chat_widget.handle_key_event(KeyCode::Esc.into());
+    app.chat_widget.handle_key_event(KeyCode::Enter.into());
+    assert_matches!(
+        next_user_turn_op(&mut ops),
+        Op::UserTurn { service_tier, .. }
+            if service_tier == Some(Some(SERVICE_TIER_DEFAULT_REQUEST_VALUE.into()))
+    );
+    server.shutdown().await?;
     Ok(())
 }
 

@@ -2540,6 +2540,26 @@ impl App {
                 self.app_event_tx.send(AppEvent::FollowTranscript);
                 self.select_session_model(app_server, model, effort, service_tier).await;
             }
+            AppEvent::OpenQuickDials(mode) => self.chat_widget.open_quick_dials_picker(mode),
+            AppEvent::OpenQuickDialEditor { target, dial } => {
+                self.chat_widget.open_quick_dial_editor(target, dial);
+            }
+            AppEvent::OpenQuickDialPrefills(target) => {
+                self.chat_widget.open_quick_dial_prefills(target);
+            }
+            AppEvent::OpenQuickDialSavePicker(dial) => {
+                self.chat_widget.open_quick_dial_save_picker(dial);
+            }
+            AppEvent::ConfirmQuickDial { slot, dial } => self.chat_widget.confirm_quick_dial(slot, dial),
+            AppEvent::SaveQuickDial { slot, dial } => {
+                self.app_event_tx.send(AppEvent::FollowTranscript);
+                self.save_quick_dial(slot, dial).await;
+            }
+            AppEvent::RecallQuickDial { slot, thread_id } => {
+                if self.chat_widget.thread_id() == thread_id {
+                    self.chat_widget.recall_quick_dial(slot);
+                }
+            }
             AppEvent::CyberModelAutoReviewNotice => {
                 self.chat_widget.add_warning_message(
                     "Cyber models default to \"Approve for me\" for safety reasons.".to_string(),

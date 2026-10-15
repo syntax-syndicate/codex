@@ -378,6 +378,9 @@ impl ChatWidget {
                 self.open_model_popup();
                 self.defer_input_until_settings_applied();
             }
+            SlashCommand::Presets => {
+                self.open_quick_dials_picker(quick_dials::QuickDialPickerMode::Recall);
+            }
             SlashCommand::Plan => {
                 self.apply_plan_slash_command();
             }
@@ -1318,6 +1321,7 @@ impl ChatWidget {
             | SlashCommand::Compact
             | SlashCommand::Review
             | SlashCommand::Model
+            | SlashCommand::Presets
             | SlashCommand::Plan
             | SlashCommand::Goal
             | SlashCommand::Side
