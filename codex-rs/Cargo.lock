@@ -1970,6 +1970,7 @@ dependencies = [
  "base64 0.22.1",
  "caseless",
  "chrono",
+ "codex-attachment-store",
  "codex-extension-api",
  "codex-protocol",
  "codex-state",
@@ -3757,6 +3758,7 @@ version = "0.0.0"
 dependencies = [
  "base64 0.22.1",
  "codex-api",
+ "codex-attachment-store",
  "codex-core",
  "codex-exec-server",
  "codex-extension-api",
@@ -4618,6 +4620,7 @@ dependencies = [
  "assert_matches",
  "blake3",
  "codex-analytics",
+ "codex-attachment-store",
  "codex-config",
  "codex-exec-server",
  "codex-extension-api",
@@ -4771,6 +4774,7 @@ name = "codex-tools"
 version = "0.0.0"
 dependencies = [
  "bitflags 2.13.1",
+ "codex-attachment-store",
  "codex-code-mode",
  "codex-connectors",
  "codex-extension-items",
