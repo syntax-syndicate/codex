@@ -1231,7 +1231,7 @@ pub(crate) enum AppEvent {
     /// Update the current model slug in the running app and widget.
     UpdateModel(String),
 
-    /// Apply a final Astra picker action and offer the flourish only if it changed the model on
+    /// Apply an explicit Astra selection and offer the flourish only if it changed the model on
     /// its original task. Automatic model updates do not use this event.
     AstraSelectedFromModelPicker {
         thread_id: ThreadId,
@@ -1269,10 +1269,11 @@ pub(crate) enum AppEvent {
         effort: Option<ReasoningEffort>,
     },
 
-    /// Apply a model and effort only to the active session, preserving saved defaults.
+    /// Apply a model, effort, and optional speed only to the active session, preserving saved defaults.
     SelectSessionModel {
         model: String,
         effort: Option<ReasoningEffort>,
+        service_tier: Option<String>,
     },
 
     /// Show the cyber auto-review notice after the model selection confirmation.

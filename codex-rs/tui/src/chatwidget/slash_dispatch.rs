@@ -804,6 +804,10 @@ impl ChatWidget {
         } = prepared;
         let trimmed = args.trim();
         match cmd {
+            SlashCommand::Model if !trimmed.is_empty() => {
+                self.handle_model_command_args(trimmed);
+                self.app_event_tx.send(AppEvent::SettingsSelectionClosed);
+            }
             SlashCommand::Export if trimmed.is_empty() => self.show_transcript_export_popup(),
             SlashCommand::Export => {
                 self.set_queue_autosend_suppressed(/*suppressed*/ true);

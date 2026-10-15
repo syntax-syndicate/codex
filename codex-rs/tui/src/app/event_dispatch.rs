@@ -2536,9 +2536,9 @@ impl App {
             AppEvent::PersistDaybreakSelection { thread_id, enabled } => {
                 self.persist_daybreak_selection(app_server, thread_id, enabled).await;
             }
-            AppEvent::SelectSessionModel { model, effort } => {
+            AppEvent::SelectSessionModel { model, effort, service_tier } => {
                 self.app_event_tx.send(AppEvent::FollowTranscript);
-                self.select_session_model(app_server, model, effort).await;
+                self.select_session_model(app_server, model, effort, service_tier).await;
             }
             AppEvent::CyberModelAutoReviewNotice => {
                 self.chat_widget.add_warning_message(

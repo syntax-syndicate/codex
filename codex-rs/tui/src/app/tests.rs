@@ -9729,6 +9729,7 @@ async fn changing_cyber_model_reasoning_preserves_selected_permissions() {
                     AppEvent::SelectSessionModel {
                         model: model_name.clone(),
                         effort: Some(effort.clone()),
+                        service_tier: None,
                     },
                 )
                 .await
