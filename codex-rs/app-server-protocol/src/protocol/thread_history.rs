@@ -28,6 +28,8 @@ use crate::protocol::v2::WebSearchAction;
 use crate::protocol::v2::WebSearchItem;
 use crate::protocol::v2::web_search_action_from_core;
 use codex_extension_items::image_generation::GeneratedImageRef;
+#[cfg(test)]
+use codex_extension_items::image_generation::ImageGenerationInputImage;
 use codex_extension_items::image_generation::ImageGenerationItem;
 use codex_protocol::items::parse_hook_prompt_message;
 use codex_protocol::protocol::AgentMessageEvent;
@@ -906,6 +908,7 @@ impl ThreadHistoryBuilder {
             transparent_background: None,
             failure: None,
             saved_path: None,
+            input_images: Vec::new(),
             imagegen_request_id: None,
             generation_id: None,
         });
@@ -921,6 +924,7 @@ impl ThreadHistoryBuilder {
             transparent_background: payload.transparent_background,
             failure: payload.failure.clone(),
             saved_path: payload.saved_path.clone(),
+            input_images: payload.input_images.clone(),
             imagegen_request_id: None,
             generation_id: None,
         });
@@ -2333,6 +2337,10 @@ mod tests {
         let turn_id = "turn-1";
         let thread_id = ThreadId::new();
         let saved_path = test_path_buf("/tmp/image-1.png").abs();
+        let input_images = vec![ImageGenerationInputImage {
+            path: test_path_buf("/tmp/reference.png").abs(),
+            sha256: "ab".repeat(32),
+        }];
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
                 turn_attribution: None,
@@ -2357,6 +2365,7 @@ mod tests {
                         transparent_background: Some(true),
                         failure: None,
                         saved_path: Some(saved_path.clone()),
+                        input_images: input_images.clone(),
                         imagegen_request_id: None,
                         generation_id: None,
                     },
@@ -2378,6 +2387,10 @@ mod tests {
         let items = events
             .into_iter()
             .map(RolloutItem::EventMsg)
+            .map(|item| {
+                serde_json::from_value(serde_json::to_value(item).expect("serialize rollout"))
+                    .expect("deserialize rollout")
+            })
             .collect::<Vec<_>>();
 
         let turns = build_turns_from_rollout_items(&items);
@@ -2394,6 +2407,7 @@ mod tests {
                 transparent_background: Some(true),
                 failure: None,
                 saved_path: Some(saved_path),
+                input_images,
                 imagegen_request_id: None,
                 generation_id: None,
             })]
@@ -2689,6 +2703,10 @@ mod tests {
                     },
                 ),
                 saved_path: Some(test_path_buf("/tmp/ig_123.png").abs()),
+                input_images: vec![ImageGenerationInputImage {
+                    path: test_path_buf("/tmp/reference.png").abs(),
+                    sha256: "ab".repeat(32),
+                }],
             })),
             RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
                 root_turn_id: None,
@@ -2739,6 +2757,10 @@ mod tests {
                             },
                         ),
                         saved_path: Some(test_path_buf("/tmp/ig_123.png").abs()),
+                        input_images: vec![ImageGenerationInputImage {
+                    path: test_path_buf("/tmp/reference.png").abs(),
+                    sha256: "ab".repeat(32),
+                }],
                         imagegen_request_id: None,
                         generation_id: None,
                     }),

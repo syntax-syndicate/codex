@@ -3775,10 +3775,13 @@ dependencies = [
  "codex-utils-image",
  "codex-utils-path-uri",
  "http 1.4.0",
+ "image",
  "pretty_assertions",
  "schemars 0.8.22",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
  "tokio",
  "tracing",
 ]

@@ -2102,6 +2102,17 @@ class ImageGenerationFailure(RootModel[UsageLimitExceededImageGenerationFailure]
     root: UsageLimitExceededImageGenerationFailure
 
 
+class ImageGenerationInputImage(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    path: AbsolutePathBuf
+    sha256: Annotated[
+        str,
+        Field(description="Lowercase SHA-256 of the file bytes read before image normalization."),
+    ]
+
+
 class InAppBrowserRequirements(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -5530,6 +5541,13 @@ class FileIdThreadItem(BaseModel):
     )
     failure: ImageGenerationFailure | None = None
     id: str
+    input_images: Annotated[
+        list[ImageGenerationInputImage] | None,
+        Field(
+            alias="inputImages",
+            description="Observed local inputs for a completed generation, absent on older items.",
+        ),
+    ] = None
     revised_prompt: Annotated[str | None, Field(alias="revisedPrompt")] = None
     saved_path: Annotated[AbsolutePathBuf | None, Field(alias="savedPath")] = None
     status: str
@@ -5544,6 +5562,13 @@ class ResultThreadItem(BaseModel):
     )
     failure: ImageGenerationFailure | None = None
     id: str
+    input_images: Annotated[
+        list[ImageGenerationInputImage] | None,
+        Field(
+            alias="inputImages",
+            description="Observed local inputs for a completed generation, absent on older items.",
+        ),
+    ] = None
     revised_prompt: Annotated[str | None, Field(alias="revisedPrompt")] = None
     saved_path: Annotated[AbsolutePathBuf | None, Field(alias="savedPath")] = None
     status: str
