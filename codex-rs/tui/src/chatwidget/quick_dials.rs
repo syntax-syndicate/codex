@@ -1,7 +1,9 @@
-//! Numbered reusable inputs using the existing picker and queued submission path.
+//! Numbered reusable inputs with one HUD and pickers for editing, saving, and deleting.
 //! Saving leaves the draft untouched; recall preserves drafts and obeys normal command gates.
+//! The shared-leader submenu respects popup ownership, cancellation, and held-key repeats.
 
 use super::*;
+use crate::bottom_pane::ShortcutHud;
 use crate::wrapping::word_wrap_lines;
 use codex_config::types::QuickDial;
 use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
@@ -22,8 +24,7 @@ impl Renderable for QuickDialConfirmationHeader {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum QuickDialPickerMode {
-    Recall,
+enum QuickDialPickerMode {
     Save,
     Edit,
     Clear,
@@ -33,14 +34,6 @@ pub(crate) enum QuickDialPickerMode {
 pub(crate) enum QuickDialEditorTarget {
     PickSlot,
     Slot(u8),
-}
-
-#[derive(Clone, Copy)]
-enum QuickDialMenuAction {
-    New,
-    Edit,
-    Prefill,
-    Clear,
 }
 
 fn quick_dial_label(dial: &QuickDial) -> String {
@@ -56,6 +49,34 @@ fn quick_dial_label(dial: &QuickDial) -> String {
 }
 
 impl ChatWidget {
+    pub(super) fn quick_dial_hud(&self) -> ShortcutHud {
+        let mut entries: Vec<_> = (1..=9)
+            .chain(std::iter::once(/*value*/ 0))
+            .filter_map(|slot| {
+                let key = slot.to_string();
+                self.local_settings
+                    .tui
+                    .quick_dials
+                    .get(&key)
+                    .map(|dial| ShortcutHud::item(key, quick_dial_label(dial).into()))
+            })
+            .collect();
+        if entries.is_empty() {
+            entries.push("No presets saved. Press n to create one.".dim().into());
+        }
+        let commands = [
+            ("n", "new"),
+            ("s", "from settings"),
+            ("e", "edit"),
+            ("d", "delete"),
+            ("esc", "close"),
+        ]
+        .into_iter()
+        .map(|(key, label)| ShortcutHud::item(key, label.into()))
+        .collect();
+        ShortcutHud::new("Presets", entries, commands)
+    }
+
     fn composer_quick_dial_text(&mut self) -> String {
         if !self.bottom_pane.composer_local_images().is_empty()
             || !self.bottom_pane.remote_image_urls().is_empty()
@@ -167,7 +188,7 @@ impl ChatWidget {
         );
     }
 
-    pub(crate) fn open_quick_dials_picker(&mut self, mode: QuickDialPickerMode) {
+    fn open_quick_dials_picker(&mut self, mode: QuickDialPickerMode) {
         if !self.quick_dials_available() {
             return;
         }
@@ -183,21 +204,18 @@ impl ChatWidget {
     }
 
     fn show_quick_dials_picker(&mut self, mode: QuickDialPickerMode, current: Option<QuickDial>) {
-        let thread_id = self.thread_id();
         let mut items = Vec::new();
         for slot in (1..=9).chain(std::iter::once(/*value*/ 0)) {
             let saved = self.local_settings.tui.quick_dials.get(&slot.to_string());
-            if mode == QuickDialPickerMode::Edit && saved.is_none() {
+            if mode != QuickDialPickerMode::Save && saved.is_none() {
                 continue;
             }
             let dial = current.clone();
             let saved_for_edit = saved.cloned();
             let has_saved = saved.is_some();
             let (is_disabled, dismiss_on_select, dismiss_parent_on_child_accept) = match mode {
-                QuickDialPickerMode::Recall => (!has_saved, true, false),
                 QuickDialPickerMode::Save => (dial.is_none(), !has_saved, has_saved),
-                QuickDialPickerMode::Edit => (false, false, true),
-                QuickDialPickerMode::Clear => (!has_saved, false, true),
+                QuickDialPickerMode::Edit | QuickDialPickerMode::Clear => (false, false, true),
             };
             items.push(SelectionItem {
                 name: saved.map(quick_dial_label).unwrap_or_default(),
@@ -219,9 +237,6 @@ impl ChatWidget {
                 is_disabled,
                 actions: vec![Box::new(move |tx| {
                     let event = match mode {
-                        QuickDialPickerMode::Recall => {
-                            AppEvent::RecallQuickDial { slot, thread_id }
-                        }
                         QuickDialPickerMode::Save if has_saved => AppEvent::ConfirmQuickDial {
                             slot,
                             dial: dial.clone(),
@@ -245,49 +260,7 @@ impl ChatWidget {
                 ..Default::default()
             });
         }
-        if mode == QuickDialPickerMode::Recall {
-            for (key, name, action) in [
-                (Some('s'), "New preset…", QuickDialMenuAction::New),
-                (Some('e'), "Edit a preset…", QuickDialMenuAction::Edit),
-                (
-                    None,
-                    "Start from current settings…",
-                    QuickDialMenuAction::Prefill,
-                ),
-                (Some('d'), "Delete a preset…", QuickDialMenuAction::Clear),
-            ] {
-                let is_disabled = matches!(
-                    action,
-                    QuickDialMenuAction::Edit | QuickDialMenuAction::Clear
-                ) && self.local_settings.tui.quick_dials.is_empty();
-                items.push(SelectionItem {
-                    name: name.into(),
-                    display_shortcut: key.map(|key| key_hint::plain(KeyCode::Char(key)).into()),
-                    actions: vec![Box::new(move |tx| {
-                        tx.send(match action {
-                            QuickDialMenuAction::New => AppEvent::OpenQuickDialEditor {
-                                target: QuickDialEditorTarget::PickSlot,
-                                dial: None,
-                            },
-                            QuickDialMenuAction::Edit => {
-                                AppEvent::OpenQuickDials(QuickDialPickerMode::Edit)
-                            }
-                            QuickDialMenuAction::Prefill => {
-                                AppEvent::OpenQuickDialPrefills(QuickDialEditorTarget::PickSlot)
-                            }
-                            QuickDialMenuAction::Clear => {
-                                AppEvent::OpenQuickDials(QuickDialPickerMode::Clear)
-                            }
-                        })
-                    })],
-                    is_disabled,
-                    dismiss_parent_on_child_accept: true,
-                    ..Default::default()
-                });
-            }
-        }
         let title = match mode {
-            QuickDialPickerMode::Recall => "Presets",
             QuickDialPickerMode::Save => "Save preset to slot",
             QuickDialPickerMode::Edit => "Edit a preset",
             QuickDialPickerMode::Clear => "Delete a preset",
@@ -308,7 +281,7 @@ impl ChatWidget {
             view_id: Some("quick-dials"),
             auto_number_shortcuts: false,
             initial_selected_idx,
-            max_visible_rows: 14,
+            max_visible_rows: 10,
             title: Some(title.into()),
             subtitle: (mode == QuickDialPickerMode::Save)
                 .then(|| current.as_ref().map(quick_dial_label))
@@ -378,7 +351,7 @@ impl ChatWidget {
         self.defer_input_until_settings_applied();
     }
 
-    pub(crate) fn open_quick_dial_prefills(&mut self, target: QuickDialEditorTarget) {
+    fn open_quick_dial_prefills(&mut self) {
         if !self.quick_dials_available() {
             return;
         }
@@ -388,7 +361,7 @@ impl ChatWidget {
                 let description = Some(dial.input.clone());
                 let actions = vec![Box::new(move |tx: &AppEventSender| {
                     tx.send(AppEvent::OpenQuickDialEditor {
-                        target,
+                        target: QuickDialEditorTarget::PickSlot,
                         dial: Some(dial.clone()),
                     })
                 }) as SelectionAction];
@@ -454,5 +427,105 @@ impl ChatWidget {
             }],
             ..SelectionViewParams::picker()
         });
+    }
+
+    pub(crate) fn cancel_quick_dial_menu(&mut self) {
+        if self.quick_dial_menu {
+            self.set_footer_hint_override(/*items*/ None);
+        }
+    }
+
+    pub(crate) fn open_quick_dial_menu(&mut self) {
+        if self.quick_dials_available() {
+            self.bottom_pane.flush_pending_composer_input();
+            if !self.bottom_pane.no_modal_or_popup_active() {
+                return;
+            }
+            self.set_footer_hint_override(Some(Vec::new()));
+            self.quick_dial_menu = true;
+        }
+    }
+
+    pub(crate) fn handle_quick_dial_menu(&mut self, key: KeyEvent) -> bool {
+        if let Some(guard) = self.quick_dial_menu_key_guard.as_mut() {
+            if guard.consume(KeyBinding::from_event(key), key.kind) {
+                return true;
+            }
+            if !guard.is_active() {
+                self.quick_dial_menu_key_guard = None;
+            }
+        }
+        if !self.quick_dial_menu {
+            return false;
+        }
+        if !self.bottom_pane.no_modal_or_popup_active() {
+            self.cancel_quick_dial_menu();
+            return false;
+        }
+        if key.kind != KeyEventKind::Press || key.code == KeyCode::Enter {
+            return true;
+        }
+        self.cancel_quick_dial_menu();
+        if self.chat_keymap.chord_hints.leader.is_pressed(key)
+            || self.chat_keymap.open_presets.is_pressed(key)
+        {
+            return true;
+        }
+        if key.modifiers != KeyModifiers::NONE {
+            return false;
+        }
+        let consumed = match key.code {
+            KeyCode::Esc => true,
+            KeyCode::Char('n') => {
+                self.open_quick_dial_editor(QuickDialEditorTarget::PickSlot, /*dial*/ None);
+                true
+            }
+            KeyCode::Char('s') => {
+                self.open_quick_dial_prefills();
+                true
+            }
+            KeyCode::Char('e') => {
+                self.open_quick_dials_picker(QuickDialPickerMode::Edit);
+                true
+            }
+            KeyCode::Char('d') => {
+                self.open_quick_dials_picker(QuickDialPickerMode::Clear);
+                true
+            }
+            KeyCode::Char(c @ '0'..='9') => {
+                if self.quick_dials_available() {
+                    let slot = c as u8 - b'0';
+                    if self
+                        .local_settings
+                        .tui
+                        .quick_dials
+                        .contains_key(&slot.to_string())
+                    {
+                        self.input_queue.suppress_queue_autosend = true;
+                        self.app_event_tx.send(AppEvent::RecallQuickDial {
+                            slot,
+                            thread_id: self.thread_id(),
+                        });
+                        self.on_modal_or_popup_closed();
+                    } else {
+                        self.open_quick_dial_editor(
+                            QuickDialEditorTarget::Slot(slot),
+                            /*dial*/ None,
+                        );
+                    }
+                }
+                true
+            }
+            _ => false,
+        };
+        if consumed {
+            self.quick_dial_menu_key_guard =
+                Some(crate::activation_key_guard::ActivationKeyGuard::new_at(
+                    KeyBinding::from_event(key),
+                    Instant::now(),
+                    /*key_releases_reported*/ false,
+                ));
+        }
+        consumed
     }
 }

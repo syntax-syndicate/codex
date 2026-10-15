@@ -1276,12 +1276,10 @@ pub(crate) enum AppEvent {
         service_tier: Option<String>,
     },
 
-    OpenQuickDials(crate::chatwidget::quick_dials::QuickDialPickerMode),
     OpenQuickDialEditor {
         target: crate::chatwidget::quick_dials::QuickDialEditorTarget,
         dial: Option<codex_config::types::QuickDial>,
     },
-    OpenQuickDialPrefills(crate::chatwidget::quick_dials::QuickDialEditorTarget),
     OpenQuickDialSavePicker(codex_config::types::QuickDial),
     ConfirmQuickDial {
         slot: u8,

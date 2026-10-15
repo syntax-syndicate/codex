@@ -1,8 +1,7 @@
-//! Save, Clear, and confirmation layouts keep destructive preset actions explicit.
+//! Preset HUD, editor, and save/delete flows preserve drafts and explicit confirmation.
 
 use super::*;
 use crate::chatwidget::quick_dials::QuickDialEditorTarget;
-use crate::chatwidget::quick_dials::QuickDialPickerMode;
 use codex_config::types::QuickDial;
 
 #[tokio::test]
@@ -11,6 +10,19 @@ async fn saved_quick_dials_save_and_clear_picker_snapshots() {
     let (mut chat, mut events, _ops) =
         make_chatwidget_manual(/*model_override*/ Some("gpt-5.5")).await;
     chat.thread_id = Some(ThreadId::new());
+    chat.open_quick_dial_menu();
+    assert_chatwidget_snapshot!(
+        "quick_dial_shortcuts_empty",
+        render_bottom_popup(&chat, /*width*/ 100)
+    );
+    let escape = KeyCode::Esc.into();
+    assert!(chat.handle_quick_dial_menu(escape));
+    assert!(chat.handle_quick_dial_menu(escape));
+    assert!(chat.handle_quick_dial_menu(KeyEvent::new_with_kind(
+        KeyCode::Esc,
+        KeyModifiers::NONE,
+        crossterm::event::KeyEventKind::Release,
+    )));
     chat.local_settings.tui.quick_dials = [(
         "1".into(),
         QuickDial {
@@ -21,10 +33,14 @@ async fn saved_quick_dials_save_and_clear_picker_snapshots() {
     .into();
     chat.bottom_pane.apply_external_edit(DRAFT.into());
     chat.dispatch_command(SlashCommand::Presets);
-    assert_chatwidget_snapshot!(
-        "saved_quick_dials_recall",
-        render_bottom_popup(&chat, /*width*/ 80)
-    );
+    let hud = render_bottom_popup(&chat, /*width*/ 80);
+    chat.handle_key_event(KeyCode::Enter.into());
+    assert_eq!(render_bottom_popup(&chat, /*width*/ 80), hud);
+    assert_eq!(chat.bottom_pane.composer_text(), DRAFT);
+    assert!(chat.queued_user_message_texts().is_empty());
+    chat.cancel_quick_dial_menu();
+    chat.open_quick_dial_menu();
+    assert_eq!(render_bottom_popup(&chat, /*width*/ 80), hud);
     chat.handle_key_event(KeyCode::Esc.into());
     while events.try_recv().is_ok() {}
     chat.open_quick_dial_editor(QuickDialEditorTarget::PickSlot, /*dial*/ None);
@@ -66,7 +82,8 @@ async fn saved_quick_dials_save_and_clear_picker_snapshots() {
     );
     chat.handle_key_event(KeyCode::Esc.into());
 
-    chat.open_quick_dials_picker(QuickDialPickerMode::Clear);
+    chat.open_quick_dial_menu();
+    chat.handle_key_event(KeyCode::Char('d').into());
     assert_chatwidget_snapshot!(
         "saved_quick_dials_clear",
         render_bottom_popup(&chat, /*width*/ 80)
@@ -120,6 +137,38 @@ async fn saved_quick_dials_save_and_clear_picker_snapshots() {
         ["/model gpt-5.5 --reasoning=high --speed=fast"]
     );
 
+    chat.local_settings.tui.quick_dials.extend(
+        [
+            ("2", "/permissions workspace-write"),
+            (
+                "3",
+                "Review the current changes and explain every important behavior change",
+            ),
+            ("5", "/skills simplify-code"),
+            ("7", "Plan the requested change"),
+            ("0", "/status"),
+        ]
+        .map(|(slot, input)| {
+            (
+                slot.into(),
+                QuickDial {
+                    input: input.into(),
+                    label: None,
+                },
+            )
+        }),
+    );
+    chat.open_quick_dial_menu();
+    assert_chatwidget_snapshot!(
+        "quick_dial_shortcuts",
+        render_bottom_popup(&chat, /*width*/ 100)
+    );
+    assert_chatwidget_snapshot!(
+        "quick_dial_shortcuts_narrow",
+        render_bottom_popup(&chat, /*width*/ 48)
+    );
+    chat.handle_key_event(KeyCode::Esc.into());
+
     chat.set_reasoning_effort(Some(ReasoningEffortConfig::High));
     chat.effective_service_tier = Some(SERVICE_TIER_DEFAULT_REQUEST_VALUE.into());
     assert_eq!(
@@ -130,7 +179,8 @@ async fn saved_quick_dials_save_and_clear_picker_snapshots() {
         })
     );
     let expected_model = chat.current_model_quick_dial().expect("model command");
-    chat.open_quick_dial_prefills(QuickDialEditorTarget::PickSlot);
+    chat.open_quick_dial_menu();
+    chat.handle_key_event(KeyCode::Char('s').into());
     chat.handle_key_event(KeyCode::Enter.into());
     assert_matches!(
         std::iter::from_fn(|| events.try_recv().ok())

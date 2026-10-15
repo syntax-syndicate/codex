@@ -379,7 +379,7 @@ impl ChatWidget {
                 self.defer_input_until_settings_applied();
             }
             SlashCommand::Presets => {
-                self.open_quick_dials_picker(quick_dials::QuickDialPickerMode::Recall);
+                self.open_quick_dial_menu();
             }
             SlashCommand::Plan => {
                 self.apply_plan_slash_command();

@@ -2540,12 +2540,8 @@ impl App {
                 self.app_event_tx.send(AppEvent::FollowTranscript);
                 self.select_session_model(app_server, model, effort, service_tier).await;
             }
-            AppEvent::OpenQuickDials(mode) => self.chat_widget.open_quick_dials_picker(mode),
             AppEvent::OpenQuickDialEditor { target, dial } => {
                 self.chat_widget.open_quick_dial_editor(target, dial);
-            }
-            AppEvent::OpenQuickDialPrefills(target) => {
-                self.chat_widget.open_quick_dial_prefills(target);
             }
             AppEvent::OpenQuickDialSavePicker(dial) => {
                 self.chat_widget.open_quick_dial_save_picker(dial);

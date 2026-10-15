@@ -701,6 +701,10 @@ pub(crate) struct ChatWidget {
     safety_buffering_source: UserMessageSource,
     /// Main chat-surface bindings resolved from `tui.keymap.chat`.
     chat_keymap: ChatKeymap,
+    /// Whether the preset submenu owns the next key.
+    quick_dial_menu: bool,
+    /// Ignore a held key after it dismisses the preset submenu.
+    quick_dial_menu_key_guard: Option<crate::activation_key_guard::ActivationKeyGuard>,
     permission_shortcut_pending: bool,
     // Pending notification to show when unfocused on next Draw
     pub(crate) pending_notification: Option<Notification>,
