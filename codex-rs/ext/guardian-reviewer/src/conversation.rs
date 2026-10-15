@@ -35,19 +35,19 @@ impl<H> Default for ConversationState<H> {
     }
 }
 
-impl<H> ConversationState<H> {
-    /// Starts an independent conversation from exactly the committed history and cursor.
-    pub fn fork(checkpoint: ConversationCheckpoint<H>) -> (Self, H) {
-        (
-            Self {
-                cursor: checkpoint.cursor,
-                completed_review_count: checkpoint.completed_review_count,
-                ..Self::default()
-            },
-            checkpoint.history,
-        )
+impl<H> From<ConversationCheckpoint<H>> for ConversationState<H> {
+    /// Restores committed progress and keeps its history available for rollback or a fork.
+    /// An exclusive request can transfer the history with `take_history` after admission.
+    fn from(checkpoint: ConversationCheckpoint<H>) -> Self {
+        Self {
+            cursor: checkpoint.cursor,
+            completed_review_count: checkpoint.completed_review_count,
+            checkpoint: Some(checkpoint),
+        }
     }
+}
 
+impl<H> ConversationState<H> {
     pub fn cursor(&self) -> Option<TranscriptCursor> {
         self.cursor
     }
