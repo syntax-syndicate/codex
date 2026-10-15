@@ -1,0 +1,12 @@
+---
+source: tui/src/chatwidget/tests/quick_dials_tests.rs
+expression: "render_bottom_popup(&chat, 80)"
+---
+  Start preset from current settings
+
+
+› 1. Current model        /model gpt-5.5 --speed=standard
+  2. Current permissions  /permissions :workspace --approval-policy=on-request
+                          --reviewer=user
+
+  enter select · esc back

@@ -3236,7 +3236,7 @@ impl App {
                     return Ok(AppRunControl::Continue);
                 }
                 self.chat_widget
-                    .select_permission_profile_by_id(&profile_id);
+                    .select_permission_profile(&profile_id);
             }
             AppEvent::OpenPermissionsPopup | AppEvent::OpenApprovalsPopup => {
                 if self.reject_pending_permission_change() {

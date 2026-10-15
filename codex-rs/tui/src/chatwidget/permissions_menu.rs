@@ -50,10 +50,12 @@ pub(crate) fn cyber_model_approval_reviewer(config: &Config) -> Option<Approvals
 }
 
 impl ChatWidget {
-    pub(super) fn try_select_permission_profile_by_id(
+    pub(super) fn try_select_permission_profile(
         &mut self,
         discovery: &PermissionDiscovery,
         profile_id: &str,
+        requested_approval_policy: Option<AskForApproval>,
+        requested_reviewer: Option<ApprovalsReviewer>,
     ) -> bool {
         let reviewer = match profile_id {
             ":approve-for-me" if !self.config.features.enabled(Feature::GuardianApproval) => {
@@ -83,10 +85,21 @@ impl ChatWidget {
         let preset = builtin_approval_presets()
             .into_iter()
             .find(|preset| preset.active_permission_profile.id == profile_id);
-        let approval_policy = preset
-            .as_ref()
-            .map(|preset| AskForApproval::from(preset.approval));
-        let approvals_reviewer = preset.as_ref().map(|_| reviewer);
+        let approval_policy = requested_approval_policy.or_else(|| {
+            preset
+                .as_ref()
+                .map(|preset| AskForApproval::from(preset.approval))
+        });
+        let approvals_reviewer = requested_reviewer.or_else(|| preset.as_ref().map(|_| reviewer));
+        if approvals_reviewer == Some(ApprovalsReviewer::AutoReview)
+            && !self.config.features.enabled(Feature::GuardianApproval)
+        {
+            self.add_error_message(
+                "Approve for me is unavailable. Run `/permissions` to see available profiles."
+                    .into(),
+            );
+            return false;
+        }
         if let Some(reason) = discovery.disabled_reason(
             profile_id,
             approval_policy,
@@ -97,14 +110,13 @@ impl ChatWidget {
             ));
             return false;
         }
-        let display_label =
-            preset
-                .as_ref()
-                .map_or(profile.id.as_str(), |preset| match (preset.id, reviewer) {
-                    ("auto", ApprovalsReviewer::AutoReview) => APPROVE_FOR_ME_LABEL,
-                    ("auto", ApprovalsReviewer::User) => ASK_FOR_APPROVAL_LABEL,
-                    _ => preset.label,
-                });
+        let display_label = preset.as_ref().map_or(profile.id.as_str(), |preset| {
+            match (preset.id, approvals_reviewer) {
+                ("auto", Some(ApprovalsReviewer::AutoReview)) => APPROVE_FOR_ME_LABEL,
+                ("auto", _) => ASK_FOR_APPROVAL_LABEL,
+                _ => preset.label,
+            }
+        });
         let selection = PermissionProfileSelection {
             profile_id: profile_id.to_string(),
             approval_policy,
@@ -116,7 +128,7 @@ impl ChatWidget {
                 .permission_mode_actions(
                     &preset,
                     display_label.to_string(),
-                    reviewer,
+                    approvals_reviewer.unwrap_or(reviewer),
                     /*profile_selection*/ Some(selection),
                     /*return_to_permissions*/ true,
                 )

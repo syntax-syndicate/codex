@@ -825,7 +825,7 @@ impl ChatWidget {
                     profile_id: trimmed.to_string(),
                 });
             }
-            SlashCommand::Permissions => self.select_permission_profile_by_id(trimmed),
+            SlashCommand::Permissions => self.select_permission_profile(trimmed),
             SlashCommand::Export => {
                 self.set_queue_autosend_suppressed(/*suppressed*/ true);
                 self.app_event_tx.send(AppEvent::ExportTranscript {

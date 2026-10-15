@@ -154,8 +154,7 @@ async fn inline_server_permission_selection_holds_queued_prompt_until_confirmati
     while events.try_recv().is_ok() {}
     while ops.try_recv().is_ok() {}
 
-    app.chat_widget
-        .select_permission_profile_by_id("server-only");
+    app.chat_widget.select_permission_profile("server-only");
     assert!(app.chat_widget.queue_user_message_with_options(
         crate::chatwidget::UserMessage::from("use the selected profile"),
         crate::bottom_pane::QueuedInputAction::Plain,

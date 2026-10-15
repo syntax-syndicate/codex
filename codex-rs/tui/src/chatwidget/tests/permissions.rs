@@ -92,7 +92,7 @@ async fn permission_discovery_uses_server_catalog_for_remote_custom_selection() 
 async fn permissions_command_waits_for_covering_modal_before_selecting_profile() {
     let (mut chat, mut events, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.thread_id = Some(ThreadId::new());
-    chat.select_permission_profile_by_id(BUILT_IN_PERMISSION_PROFILE_READ_ONLY);
+    chat.select_permission_profile(BUILT_IN_PERMISSION_PROFILE_READ_ONLY);
     let request_id = assert_matches!(
         events.try_recv(),
         Ok(AppEvent::FetchPermissionProfiles { request_id, .. }) => request_id
@@ -125,7 +125,7 @@ async fn cancelled_permissions_command_does_not_apply_after_later_modal() {
     chat.input_queue
         .queued_user_messages
         .push_back(UserMessage::from("follow-up").into());
-    chat.select_permission_profile_by_id(BUILT_IN_PERMISSION_PROFILE_READ_ONLY);
+    chat.select_permission_profile(BUILT_IN_PERMISSION_PROFILE_READ_ONLY);
     let request_id = assert_matches!(
         events.try_recv(),
         Ok(AppEvent::FetchPermissionProfiles { request_id, .. }) => request_id
@@ -153,6 +153,7 @@ async fn cancelled_permissions_command_does_not_apply_after_later_modal() {
 async fn permissions_command_preserves_full_access_confirmation() {
     let (mut chat, mut events, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.thread_id = Some(ThreadId::new());
+    chat.set_feature_enabled(Feature::GuardianApproval, /*enabled*/ true);
     chat.permission_discovery = Some(Discovery::local(&chat.config));
     chat.input_queue
         .queued_user_messages
@@ -160,7 +161,7 @@ async fn permissions_command_preserves_full_access_confirmation() {
 
     chat.dispatch_command_with_args(
         SlashCommand::Permissions,
-        BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS.to_string(),
+        format!("{BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS} --reviewer=auto_review"),
         Vec::new(),
     );
 
@@ -172,6 +173,7 @@ async fn permissions_command_preserves_full_access_confirmation() {
             profile_selection: Some(profile_selection),
         }) if preset.id == "full-access"
             && profile_selection.profile_id == BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS
+            && profile_selection.approvals_reviewer == Some(ApprovalsReviewer::AutoReview)
             => (preset, return_to_permissions, Some(profile_selection))
     );
     assert_matches!(events.try_recv(), Ok(AppEvent::SettingsSelectionClosed));
@@ -249,7 +251,7 @@ async fn invalidating_inline_permission_discovery_recovers_queued_input() {
     chat.input_queue
         .queued_user_messages
         .push_back(UserMessage::from("follow-up").into());
-    chat.select_permission_profile_by_id(BUILT_IN_PERMISSION_PROFILE_READ_ONLY);
+    chat.select_permission_profile(BUILT_IN_PERMISSION_PROFILE_READ_ONLY);
     let request_id = assert_matches!(
         events.try_recv(),
         Ok(AppEvent::FetchPermissionProfiles { request_id, .. }) => request_id
@@ -267,7 +269,7 @@ async fn invalidating_inline_permission_discovery_recovers_queued_input() {
 async fn inline_permission_discovery_retry_preserves_profile_id() {
     let (mut chat, mut events, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.thread_id = Some(ThreadId::new());
-    chat.select_permission_profile_by_id("server-only");
+    chat.select_permission_profile("server-only");
     let request_id = assert_matches!(
         events.try_recv(),
         Ok(AppEvent::FetchPermissionProfiles { request_id, .. }) => request_id
@@ -534,12 +536,12 @@ async fn profile_permissions_selection_emits_named_profile_event_only() {
 
     let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
     assert_eq!(events.len(), 1);
-    assert!(
-        chat.try_select_permission_profile_by_id(
-            &Discovery::local(&chat.config),
-            ":ask-for-approval",
-        )
-    );
+    assert!(chat.try_select_permission_profile(
+        &Discovery::local(&chat.config),
+        ":ask-for-approval",
+        /*requested_approval_policy*/ None,
+        /*requested_reviewer*/ None,
+    ));
     for event in events
         .into_iter()
         .chain(std::iter::from_fn(|| rx.try_recv().ok()))
@@ -611,12 +613,12 @@ async fn profile_permissions_selection_emits_auto_review_mode_event() {
 
     let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
     assert_eq!(events.len(), 1);
-    assert!(
-        chat.try_select_permission_profile_by_id(
-            &Discovery::local(&chat.config),
-            ":approve-for-me",
-        )
-    );
+    assert!(chat.try_select_permission_profile(
+        &Discovery::local(&chat.config),
+        ":approve-for-me",
+        /*requested_approval_policy*/ None,
+        /*requested_reviewer*/ None,
+    ));
     for event in events
         .into_iter()
         .chain(std::iter::from_fn(|| rx.try_recv().ok()))
@@ -631,6 +633,109 @@ async fn profile_permissions_selection_emits_auto_review_mode_event() {
             }) if profile_id == ":workspace" && display_label == "Approve for me"
         ));
     }
+}
+
+#[tokio::test]
+async fn permissions_command_selects_auto_review_mode() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    #[cfg(target_os = "windows")]
+    {
+        chat.set_windows_sandbox_mode(Some(WindowsSandboxSetupMode::Unelevated));
+    }
+    chat.config.explicit_permission_profile_mode = true;
+    chat.set_feature_enabled(Feature::GuardianApproval, /*enabled*/ true);
+    chat.permission_discovery = Some(Discovery::local(&chat.config));
+
+    chat.select_permission_profile(
+        ":workspace --approval-policy on-request --reviewer auto_review",
+    );
+
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::SelectPermissionProfile(PermissionProfileSelection {
+            profile_id,
+            approval_policy: Some(AskForApproval::OnRequest),
+            approvals_reviewer: Some(ApprovalsReviewer::AutoReview),
+            display_label,
+        })) if profile_id == ":workspace" && display_label == "Approve for me"
+    );
+}
+
+#[tokio::test]
+async fn permissions_command_restores_quoted_profile_and_complete_settings() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let granular = AskForApproval::Granular {
+        sandbox_approval: false,
+        rules: true,
+        skill_approval: false,
+        request_permissions: true,
+        mcp_elicitations: false,
+    };
+    chat.config.custom_permission_profiles = vec![PermissionProfileCatalogEntry {
+        id: "team review".to_string(),
+        description: None,
+        allowed: true,
+    }];
+    chat.permission_discovery = Some(Discovery::local(&chat.config));
+    let policy = serde_json::to_string(&granular).expect("granular policy serializes");
+
+    chat.select_permission_profile(&format!(
+        "'team review' --approval-policy='{policy}' --reviewer user"
+    ));
+
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::SelectPermissionProfile(PermissionProfileSelection {
+            profile_id,
+            approval_policy: Some(actual_policy),
+            approvals_reviewer: Some(ApprovalsReviewer::User),
+            display_label,
+        })) if profile_id == "team review"
+            && display_label == "team review"
+            && actual_policy == granular
+    );
+}
+
+#[tokio::test]
+async fn permissions_command_rejects_unavailable_auto_review_and_settles_input() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.set_feature_enabled(Feature::GuardianApproval, /*enabled*/ false);
+    chat.permission_discovery = Some(Discovery::local(&chat.config));
+    chat.input_queue
+        .queued_user_messages
+        .push_back(UserMessage::from("follow-up").into());
+
+    chat.select_permission_profile(":workspace --reviewer=auto_review");
+
+    let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(
+        events
+            .iter()
+            .all(|event| !matches!(event, AppEvent::SelectPermissionProfile(_)))
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, AppEvent::SettingsSelectionClosed))
+    );
+    assert!(chat.input_queue.recovered_queue);
+}
+
+#[tokio::test]
+async fn invalid_permissions_arguments_settle_suppressed_input() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.input_queue
+        .queued_user_messages
+        .push_back(UserMessage::from("follow-up").into());
+    chat.set_queue_autosend_suppressed(/*suppressed*/ true);
+
+    chat.select_permission_profile(":workspace --reviewer=bogus");
+
+    assert!(chat.input_queue.recovered_queue);
+    assert!(
+        std::iter::from_fn(|| rx.try_recv().ok())
+            .any(|event| matches!(event, AppEvent::SettingsSelectionClosed))
+    );
 }
 
 #[tokio::test]
@@ -1437,12 +1542,12 @@ async fn permissions_selection_hides_auto_review_when_feature_disabled() {
         !popup.contains("Approve for me"),
         "expected Approve for me to stay hidden until the feature is enabled: {popup}"
     );
-    assert!(
-        !chat.try_select_permission_profile_by_id(
-            &Discovery::local(&chat.config),
-            ":approve-for-me",
-        )
-    );
+    assert!(!chat.try_select_permission_profile(
+        &Discovery::local(&chat.config),
+        ":approve-for-me",
+        /*requested_approval_policy*/ None,
+        /*requested_reviewer*/ None,
+    ));
     let cell = assert_matches!(rx.try_recv(), Ok(AppEvent::InsertHistoryCell(cell)) => cell);
     insta::assert_snapshot!(lines_to_single_string(&cell.display_lines(/*width*/ 120)), @"■ Approve for me is unavailable. Run `/permissions` to see available profiles.");
 }

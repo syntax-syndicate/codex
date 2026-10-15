@@ -1,5 +1,6 @@
 //! Cache the last server catalog and discard discovery replies after changing scope.
 
+use super::slash_command_args;
 use super::*;
 use crate::permission_discovery::PermissionDiscovery;
 
@@ -10,11 +11,65 @@ pub(super) enum InlinePermissionProfileSelection {
     Applying,
 }
 
+struct PermissionProfileArgs {
+    profile_id: String,
+    approval_policy: Option<AskForApproval>,
+    reviewer: Option<ApprovalsReviewer>,
+}
+
+fn parse_approval_policy(value: &str) -> Result<AskForApproval, String> {
+    match value {
+        "untrusted" => Ok(AskForApproval::UnlessTrusted),
+        "on-request" => Ok(AskForApproval::OnRequest),
+        "never" => Ok(AskForApproval::Never),
+        value => serde_json::from_str(value).map_err(|_| {
+            format!(
+                "Unknown approval policy `{value}`. Expected `untrusted`, `on-request`, `never`, or a granular policy."
+            )
+        }),
+    }
+}
+
+fn parse_reviewer(value: &str) -> Result<ApprovalsReviewer, String> {
+    match value {
+        "user" => Ok(ApprovalsReviewer::User),
+        "auto_review" => Ok(ApprovalsReviewer::AutoReview),
+        value => Err(format!(
+            "Unknown permission reviewer `{value}`. Expected `user` or `auto_review`."
+        )),
+    }
+}
+
+fn parse_permission_profile_args(args: &str) -> Result<PermissionProfileArgs, String> {
+    let parsed = slash_command_args::parse(args, &["--approval-policy", "--reviewer"], &[])?;
+    let profile_id = parsed.positionals.first().cloned().ok_or_else(|| {
+        "Usage: /permissions <profile-id> [--approval-policy=<policy>] [--reviewer=user|auto_review]"
+            .to_string()
+    })?;
+    if let Some(argument) = parsed.positionals.get(1) {
+        return Err(format!("Unexpected permission argument `{argument}`."));
+    }
+    Ok(PermissionProfileArgs {
+        profile_id,
+        approval_policy: parsed
+            .value("--approval-policy")
+            .map(parse_approval_policy)
+            .transpose()?,
+        reviewer: parsed.value("--reviewer").map(parse_reviewer).transpose()?,
+    })
+}
+
 impl ChatWidget {
-    pub(crate) fn select_permission_profile_by_id(&mut self, profile_id: &str) {
+    pub(crate) fn select_permission_profile(&mut self, args: &str) {
+        if let Err(message) = parse_permission_profile_args(args) {
+            self.add_error_message(message);
+            self.retain_input_after_failed_permission_selection();
+            self.app_event_tx.send(AppEvent::SettingsSelectionClosed);
+            return;
+        }
         self.set_queue_autosend_suppressed(/*suppressed*/ true);
         self.inline_permission_profile_selection = Some(
-            InlinePermissionProfileSelection::Discovering(profile_id.to_string()),
+            InlinePermissionProfileSelection::Discovering(args.to_string()),
         );
         if !self.apply_pending_permission_profile() {
             self.request_permission_profiles();
@@ -33,11 +88,20 @@ impl ChatWidget {
         let Some(discovery) = self.permission_discovery.clone() else {
             return false;
         };
-        let Some(profile_id) = self.pending_permission_profile_id().map(str::to_owned) else {
+        let Some(args) = self.pending_permission_profile_args().map(str::to_owned) else {
             return false;
         };
+        let Ok(args) = parse_permission_profile_args(&args) else {
+            self.recover_inline_permission_profile_selection();
+            return true;
+        };
         self.inline_permission_profile_selection = Some(InlinePermissionProfileSelection::Applying);
-        if !self.try_select_permission_profile_by_id(&discovery, &profile_id) {
+        if !self.try_select_permission_profile(
+            &discovery,
+            &args.profile_id,
+            args.approval_policy,
+            args.reviewer,
+        ) {
             self.recover_inline_permission_profile_selection();
         }
         self.app_event_tx.send(AppEvent::SettingsSelectionClosed);
@@ -45,7 +109,7 @@ impl ChatWidget {
     }
 
     pub(super) fn cancel_pending_permission_profile_selection(&mut self) -> bool {
-        if self.pending_permission_profile_id().is_none() {
+        if self.pending_permission_profile_args().is_none() {
             return false;
         }
         self.recover_inline_permission_profile_selection();
@@ -69,7 +133,7 @@ impl ChatWidget {
         self.inline_permission_profile_selection.is_some()
     }
 
-    fn pending_permission_profile_id(&self) -> Option<&str> {
+    fn pending_permission_profile_args(&self) -> Option<&str> {
         match self.inline_permission_profile_selection.as_ref() {
             Some(InlinePermissionProfileSelection::Discovering(profile_id)) => Some(profile_id),
             Some(InlinePermissionProfileSelection::Applying) | None => None,
@@ -134,7 +198,7 @@ impl ChatWidget {
                 return;
             }
             if let Err(message) = result
-                && self.pending_permission_profile_id().is_some()
+                && self.pending_permission_profile_args().is_some()
             {
                 self.add_error_message(message);
             }
@@ -149,7 +213,7 @@ impl ChatWidget {
                 }
             }
             Err(message) => {
-                let retry_profile_id = self.pending_permission_profile_id().map(str::to_owned);
+                let retry_args = self.pending_permission_profile_args().map(str::to_owned);
                 self.bottom_pane.show_selection_view(SelectionViewParams {
                     view_id: Some(VIEW_ID),
                     title: Some("Update Model Permissions".to_string()),
@@ -157,8 +221,8 @@ impl ChatWidget {
                     items: vec![SelectionItem {
                         name: "Retry".to_string(),
                         actions: vec![Box::new(move |tx| {
-                            if let Some(profile_id) = retry_profile_id.clone() {
-                                tx.send(AppEvent::ResolvePermissionProfile { profile_id });
+                            if let Some(args) = retry_args.clone() {
+                                tx.send(AppEvent::ResolvePermissionProfile { profile_id: args });
                             } else {
                                 tx.send(AppEvent::OpenPermissionsPopup);
                             }

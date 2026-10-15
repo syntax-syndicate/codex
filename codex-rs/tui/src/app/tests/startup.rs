@@ -148,8 +148,7 @@ async fn windows_sandbox_setup_completion_requires_matching_pending_mode() -> Re
         .expect("auto preset");
     app.windows_sandbox.pending_setup = Some((WindowsSandboxEnableMode::Elevated, preset, None));
     app.windows_sandbox.setup_started_at = Some(Instant::now());
-    app.chat_widget
-        .select_permission_profile_by_id(":workspace");
+    app.chat_widget.select_permission_profile(":workspace");
     let AppEvent::FetchPermissionProfiles { request_id, .. } = events.try_recv()? else {
         panic!("expected profile discovery");
     };

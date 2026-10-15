@@ -351,36 +351,73 @@ impl ChatWidget {
         self.defer_input_until_settings_applied();
     }
 
-    fn open_quick_dial_prefills(&mut self) {
+    pub(super) fn open_quick_dial_prefills(&mut self) {
         if !self.quick_dials_available() {
             return;
         }
-        let model = self.current_model_quick_dial();
-        let (description, is_disabled, actions) = match model {
-            Ok(dial) => {
-                let description = Some(dial.input.clone());
-                let actions = vec![Box::new(move |tx: &AppEventSender| {
-                    tx.send(AppEvent::OpenQuickDialEditor {
-                        target: QuickDialEditorTarget::PickSlot,
-                        dial: Some(dial.clone()),
-                    })
-                }) as SelectionAction];
-                (description, false, actions)
-            }
-            Err(reason) => (Some(reason.into()), true, Vec::new()),
-        };
-        self.bottom_pane.show_selection_view(SelectionViewParams {
-            view_id: Some("quick-dial-prefills"),
-            max_visible_rows: 1,
-            title: Some("Start preset from current settings".into()),
-            items: vec![SelectionItem {
-                name: "Current model".into(),
+        let permissions = self
+            .config
+            .permissions
+            .active_permission_profile()
+            .map(|profile| -> Result<QuickDial, &'static str> {
+                let approval_policy =
+                    AskForApproval::from(self.config.permissions.approval_policy.value());
+                let approval_policy = match approval_policy {
+                    AskForApproval::UnlessTrusted => "untrusted".to_string(),
+                    AskForApproval::OnRequest => "on-request".to_string(),
+                    AskForApproval::Never => "never".to_string(),
+                    granular @ AskForApproval::Granular { .. } => serde_json::to_string(&granular)
+                        .map_err(|_| "The approval policy cannot be recalled.")?,
+                };
+                let profile_id = shlex::try_quote(&profile.id)
+                    .map_err(|_| "The permission profile name cannot be recalled.")?;
+                let approval_policy = shlex::try_quote(&approval_policy)
+                    .map_err(|_| "The approval policy cannot be recalled.")?;
+                let input = format!(
+                    "/permissions {profile_id} --approval-policy={approval_policy} --reviewer={}",
+                    self.config.approvals_reviewer
+                );
+                let dial = QuickDial { input, label: None };
+                dial.validate()?;
+                Ok(dial)
+            })
+            .unwrap_or(Err(
+                "Select a named permission profile with /permissions first.",
+            ));
+        let items = [
+            ("Current model", self.current_model_quick_dial()),
+            ("Current permissions", permissions),
+        ]
+        .into_iter()
+        .map(|(name, dial)| {
+            let (description, is_disabled, actions) = match dial {
+                Ok(dial) => {
+                    let description = Some(dial.input.clone());
+                    let actions = vec![Box::new(move |tx: &AppEventSender| {
+                        tx.send(AppEvent::OpenQuickDialEditor {
+                            target: QuickDialEditorTarget::PickSlot,
+                            dial: Some(dial.clone()),
+                        })
+                    }) as SelectionAction];
+                    (description, false, actions)
+                }
+                Err(reason) => (Some(reason.into()), true, Vec::new()),
+            };
+            SelectionItem {
+                name: name.into(),
                 description,
                 is_disabled,
                 actions,
                 dismiss_parent_on_child_accept: true,
                 ..Default::default()
-            }],
+            }
+        })
+        .collect();
+        self.bottom_pane.show_selection_view(SelectionViewParams {
+            view_id: Some("quick-dial-prefills"),
+            max_visible_rows: 2,
+            title: Some("Start preset from current settings".into()),
+            items,
             ..SelectionViewParams::picker()
         });
         self.defer_input_until_settings_applied();
