@@ -23,8 +23,10 @@ use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::sqlite::SqliteSynchronous;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
+use tokio::sync::OnceCell;
 
 mod busy_retry;
 mod validation;
@@ -154,14 +156,16 @@ pub struct RuntimeDbPath {
 }
 
 /// Resolved configuration shared by all Codex SQLite connections.
-/// Clones share quick-check attempts; a newly constructed config checks independently.
+/// Clones share filesystem probes and quick-check attempts; a new config checks independently.
 #[derive(Clone, Debug)]
 pub struct SqliteConfig {
     sqlite_home: AbsolutePathBuf,
+    is_nfs: Arc<OnceCell<bool>>,
     quick_check_manager: SqliteQuickCheckManager,
 }
 
-// Validation history is operational state, not part of configuration equality.
+// Cached filesystem information and validation history are operational state,
+// not part of configuration equality.
 impl PartialEq for SqliteConfig {
     fn eq(&self, other: &Self) -> bool {
         self.sqlite_home == other.sqlite_home
@@ -174,6 +178,7 @@ impl SqliteConfig {
     pub fn from_sqlite_home(sqlite_home: AbsolutePathBuf) -> Self {
         Self {
             sqlite_home,
+            is_nfs: Arc::new(OnceCell::new()),
             quick_check_manager: SqliteQuickCheckManager::new(),
         }
     }
@@ -184,6 +189,20 @@ impl SqliteConfig {
 
     pub fn home(&self) -> &Path {
         self.sqlite_home.as_path()
+    }
+
+    /// Detects if the sqlite_home directory is under the NFS mount (once per the lifetime)
+    pub async fn is_nfs(&self) -> anyhow::Result<bool> {
+        self.is_nfs
+            .get_or_try_init(|| async {
+                let sqlite_home = self.home().to_path_buf();
+                Ok(
+                    tokio::task::spawn_blocking(move || codex_file_system::is_nfs(&sqlite_home))
+                        .await??,
+                )
+            })
+            .await
+            .copied()
     }
 
     /// Return the path to the primary state database.

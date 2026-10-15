@@ -3485,6 +3485,7 @@ dependencies = [
  "codex-utils-absolute-path",
  "codex-utils-path-uri",
  "futures",
+ "rustix 1.1.4",
  "serde",
 ]
 
@@ -4658,6 +4659,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "codex-file-system",
  "codex-git-utils",
  "codex-history",
  "codex-protocol",
