@@ -2227,6 +2227,7 @@ dependencies = [
  "codex-uds",
  "codex-utils-cargo-bin",
  "codex-utils-home-dir",
+ "codex-utils-process",
  "futures",
  "libc",
  "pretty_assertions",
