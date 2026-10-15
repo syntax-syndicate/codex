@@ -4,9 +4,10 @@ use pretty_assertions::assert_eq;
 #[test]
 fn parses_positional_values_switches_and_quoted_arguments() {
     let parsed = parse(
-        "'team review' item --reviewer user --speed=fast --clear -- --literal",
+        "'team review' item --reviewer user --speed=fast --clear --no-colors -- --literal",
         &["--reviewer", "--speed"],
         &["--clear"],
+        &["colors"],
     )
     .expect("valid command arguments");
 
@@ -17,20 +18,26 @@ fn parses_positional_values_switches_and_quoted_arguments() {
             named: vec![
                 NamedArgument {
                     name: "--reviewer".into(),
-                    value: Some("user".into()),
+                    value: NamedArgumentValue::Value("user".into()),
                 },
                 NamedArgument {
                     name: "--speed".into(),
-                    value: Some("fast".into()),
+                    value: NamedArgumentValue::Value("fast".into()),
                 },
                 NamedArgument {
                     name: "--clear".into(),
-                    value: None,
+                    value: NamedArgumentValue::Switch,
+                },
+                NamedArgument {
+                    name: "--colors".into(),
+                    value: NamedArgumentValue::Boolean { value: false },
                 },
             ],
         }
     );
     assert_eq!(parsed.value("--reviewer"), Some("user"));
+    assert!(parsed.has_switch("--clear"));
+    assert_eq!(parsed.boolean("colors"), Some(false));
 }
 
 #[test]
@@ -48,6 +55,10 @@ fn rejects_invalid_named_arguments() {
             "--clear --clear",
             "Command setting `--clear` was provided more than once.",
         ),
+        (
+            "--colors --no-colors",
+            "Specify only one of --colors or --no-colors.",
+        ),
         ("--unknown", "Unknown command setting `--unknown`."),
         (
             "'unfinished",
@@ -55,7 +66,7 @@ fn rejects_invalid_named_arguments() {
         ),
     ] {
         assert_eq!(
-            parse(args, &["--reviewer"], &["--clear"]),
+            parse(args, &["--reviewer"], &["--clear"], &["colors"]),
             Err(expected.to_string())
         );
     }

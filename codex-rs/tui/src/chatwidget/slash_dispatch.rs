@@ -815,6 +815,14 @@ impl ChatWidget {
                 self.handle_model_command_args(trimmed);
                 self.app_event_tx.send(AppEvent::SettingsSelectionClosed);
             }
+            SlashCommand::Title => {
+                self.handle_terminal_title_command_args(trimmed);
+                self.app_event_tx.send(AppEvent::SettingsSelectionClosed);
+            }
+            SlashCommand::Statusline => {
+                self.handle_status_line_command_args(trimmed);
+                self.app_event_tx.send(AppEvent::SettingsSelectionClosed);
+            }
             SlashCommand::Permissions
                 if self.windows_sandbox_local_server
                     && self.windows_sandbox_host != WindowsSandboxHost::Remote
