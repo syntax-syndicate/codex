@@ -16,6 +16,20 @@ fn fork_keeps_committed_history_and_cursor_while_next_review_is_uncommitted() {
         transcript_entry_count: 4,
         ..first
     };
+    // A failed review can retain new input without completing or replacing the
+    // last successful checkpoint used by concurrent forks.
+    state.admit_transcript(second);
+    let (fork, history) = ConversationState::fork(state.snapshot().unwrap().clone());
+    assert_eq!(
+        (
+            state.cursor(),
+            state.completed_review_count(),
+            history,
+            fork.cursor(),
+            fork.completed_review_count(),
+        ),
+        (Some(second), 1, vec!["first review"], Some(first), 1),
+    );
     state.complete_review(second);
 
     let (fork, history) = ConversationState::fork(state.snapshot().unwrap().clone());

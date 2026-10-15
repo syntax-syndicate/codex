@@ -1,6 +1,6 @@
-//! Tracks reviewed transcript progress separately from committed conversation history.
+//! Tracks admitted transcript progress separately from completed reviews and committed history.
 //! Hosts serialize reviews and checkpoint commits, and supply opaque completed history.
-//! An exclusive continuation can take the history without advancing reviewed progress.
+//! An exclusive continuation can take the history without advancing live progress.
 
 use codex_guardian_context::TranscriptCursor;
 
@@ -62,9 +62,15 @@ impl<H> ConversationState<H> {
         self.cursor = None;
     }
 
+    /// Records input retained by the live conversation, even if inference failed.
+    /// This does not complete a review or change the committed fork checkpoint.
+    pub fn admit_transcript(&mut self, cursor: TranscriptCursor) {
+        self.cursor = Some(cursor);
+    }
+
     /// Advances live progress once the host's review completes.
     pub fn complete_review(&mut self, cursor: TranscriptCursor) {
-        self.cursor = Some(cursor);
+        self.admit_transcript(cursor);
         self.completed_review_count = self.completed_review_count.saturating_add(1);
     }
 

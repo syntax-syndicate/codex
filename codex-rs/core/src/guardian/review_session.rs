@@ -804,25 +804,39 @@ async fn run_review_on_session(
         &mut analytics_result,
     )
     .await;
-    review_session
+    // Finalizing input consumes this context; failures before admission leave it pending.
+    let transcript_admitted = review_session
         .session
         .services
         .thread_extension_data
-        .remove::<super::input_budget::PendingReviewContext>();
-    if matches!(
+        .remove::<super::input_budget::PendingReviewContext>()
+        .is_none();
+    let completed_review = matches!(
         turn_result.outcome,
         GuardianReviewSessionOutcome::Completed(_)
-    ) {
-        if turn_result.turn_completed
-            && let Some(total_token_usage) = review_session.session.total_token_usage().await
-        {
-            analytics_result.token_usage = Some(token_usage_delta(
-                &token_usage_at_review_start,
-                &total_token_usage,
-            ));
-        }
+    );
+    if completed_review
+        && turn_result.turn_completed
+        && let Some(total_token_usage) = review_session.session.total_token_usage().await
+    {
+        analytics_result.token_usage = Some(token_usage_delta(
+            &token_usage_at_review_start,
+            &total_token_usage,
+        ));
+    }
+    if completed_review
+        || (transcript_admitted
+            && turn_result.turn_completed
+            && turn_result.disposition == SessionDisposition::Reusable)
+    {
         let mut state = review_session.state.lock().await;
-        state.conversation.complete_review(transcript_cursor);
+        if completed_review {
+            state.conversation.complete_review(transcript_cursor);
+        } else {
+            // A failed inference still retains its input. Keep admission progress
+            // in sync without counting the failure as a completed review.
+            state.conversation.admit_transcript(transcript_cursor);
+        }
         state.transcript_history_version = reviewer_history_version;
         state.transcript_source = Some(transcript_source);
     }
