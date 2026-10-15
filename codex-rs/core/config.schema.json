@@ -3767,6 +3767,24 @@
       },
       "type": "object"
     },
+    "Preset": {
+      "additionalProperties": false,
+      "description": "One reusable prompt or slash command submitted through the TUI composer.",
+      "properties": {
+        "input": {
+          "description": "Plain-text input, limited to 8,000 UTF-8 bytes.",
+          "type": "string"
+        },
+        "label": {
+          "description": "Optional short name for the picker and shortcut hints.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "input"
+      ],
+      "type": "object"
+    },
     "ProfileTui": {
       "additionalProperties": false,
       "description": "TUI settings supported inside a named profile.",
@@ -4962,6 +4980,14 @@
           ],
           "default": "composer",
           "description": "Where the terminal pet should anchor vertically.\n\nDefaults to `composer`, which follows the current TUI composer viewport."
+        },
+        "presets": {
+          "additionalProperties": {
+            "$ref": "#/definitions/Preset"
+          },
+          "default": {},
+          "description": "Saved inputs keyed by a single digit (`0` through `9`).",
+          "type": "object"
         },
         "question_esc_back": {
           "default": true,
