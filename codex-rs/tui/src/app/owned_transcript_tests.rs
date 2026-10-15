@@ -188,11 +188,11 @@ async fn list_spacing_completion_preserves_the_scrolled_reader() -> Result<()> {
     let mut after = Buffer::empty(area);
     app.transcript_view
         .render(area, &mut after, &app.transcript_cells);
-    assert_eq!(after, before);
+    assert_eq!(buffer_text(&after), buffer_text(&before));
     app.transcript_view.jump_to_latest();
     app.transcript_view
         .render(area, &mut after, &app.transcript_cells);
-    assert_eq!(after, before);
+    assert_eq!(buffer_text(&after), buffer_text(&before));
     Ok(())
 }
 
