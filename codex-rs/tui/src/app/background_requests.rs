@@ -1387,6 +1387,7 @@ mod tests {
         )
         .expect("write ChatGPT authentication");
         let app_server = crate::start_app_server_for_picker(
+            crate::backend_id::BackendId::new(),
             &app.config,
             &crate::AppServerTarget::Embedded,
             app.cli_kv_overrides.clone(),
