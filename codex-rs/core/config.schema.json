@@ -1066,6 +1066,9 @@
             "multi_agent_v2_dynamic_tools": {
               "type": "boolean"
             },
+            "multi_env_copy_file": {
+              "type": "boolean"
+            },
             "network_proxy": {
               "$ref": "#/definitions/FeatureToml_for_NetworkProxyConfigToml"
             },
@@ -7450,6 +7453,9 @@
           "$ref": "#/definitions/FeatureToml_for_MultiAgentV2ConfigToml"
         },
         "multi_agent_v2_dynamic_tools": {
+          "type": "boolean"
+        },
+        "multi_env_copy_file": {
           "type": "boolean"
         },
         "network_proxy": {
