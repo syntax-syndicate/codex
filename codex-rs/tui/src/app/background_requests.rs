@@ -1599,6 +1599,7 @@ mod tests {
         let statuses = vec![
             McpServerStatus {
                 server_capabilities: None,
+                tool_list_meta: None,
                 tools_error: None,
                 name: "docs".to_string(),
                 runtime_status: None,
@@ -1624,6 +1625,7 @@ mod tests {
             },
             McpServerStatus {
                 server_capabilities: None,
+                tool_list_meta: None,
                 tools_error: None,
                 name: "disabled".to_string(),
                 runtime_status: None,
